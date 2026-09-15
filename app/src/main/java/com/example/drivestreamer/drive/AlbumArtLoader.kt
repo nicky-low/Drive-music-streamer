@@ -19,15 +19,20 @@ class AlbumArtLoader {
 
     companion object {
         // Small in-memory cache so replaying/revisiting a track doesn't
-        // re-fetch and re-parse the same art. Bytes, not Bitmaps, to keep
-        // this loader Android-Bitmap-free (easier to unit test).
-        private val cache = LruCache<String, ByteArray?>(40)
+        // re-fetch and re-parse the same art.
+        //
+        // LruCache rejects null values, so "this track has no embedded
+        // art" is recorded as an empty array sentinel rather than null —
+        // that way we still remember the absence and don't refetch a
+        // known-untagged file every time it scrolls into view.
+        private val cache = LruCache<String, ByteArray>(40)
+        private val NO_ART = ByteArray(0)
     }
 
     suspend fun fetchEmbeddedArt(fileId: String, accessToken: String): ByteArray? =
         withContext(Dispatchers.IO) {
-            if (cache.snapshot().containsKey(fileId)) {
-                return@withContext cache.get(fileId)
+            cache.get(fileId)?.let { cached ->
+                return@withContext if (cached.isEmpty()) null else cached
             }
 
             val retriever = MediaMetadataRetriever()
@@ -41,7 +46,7 @@ class AlbumArtLoader {
                 retriever.release()
             }
 
-            cache.put(fileId, bytes)
+            cache.put(fileId, bytes ?: NO_ART)
             bytes
         }
 }
