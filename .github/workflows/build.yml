@@ -21,6 +21,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          # Default is "tools platform-tools". Google removed the legacy
+          # "tools" package from its SDK repo on 2026-09-14, which makes
+          # sdkmanager exit 1 and fails this step before the build runs.
+          # We don't need it — Gradle fetches platforms/build-tools itself.
+          packages: 'platform-tools'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
