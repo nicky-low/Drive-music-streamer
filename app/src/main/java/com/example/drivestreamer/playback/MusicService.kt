@@ -119,7 +119,7 @@ class MusicService : MediaLibraryService() {
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession =
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
         mediaSession
 
     override fun onDestroy() {
