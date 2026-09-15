@@ -1,1 +1,3 @@
-
+<resources>
+    <style name="Theme.DriveStreamer" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+</resources>
