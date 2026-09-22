@@ -6,6 +6,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ListView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -18,6 +19,8 @@ import com.example.drivestreamer.drive.DriveLibraryRepository
 import com.example.drivestreamer.playback.MusicLibraryHolder
 import com.example.drivestreamer.playback.PlaybackClient
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -31,8 +34,24 @@ class MainActivity : AppCompatActivity() {
     private val signInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        account = authManager.handleSignInResult(result.data)
-        account?.let { tokenProvider.setAccount(it) }
+        authManager.handleSignInResult(result.data).fold(
+            onSuccess = { acct ->
+                account = acct
+                tokenProvider.setAccount(acct)
+                Toast.makeText(this, "Signed in as ${acct.email}", Toast.LENGTH_SHORT).show()
+            },
+            onFailure = { e ->
+                val message = if (e is ApiException) {
+                    "Sign-in failed: code ${e.statusCode} " +
+                        "(${CommonStatusCodes.getStatusCodeString(e.statusCode)})"
+                } else {
+                    "Sign-in failed: ${e.message}"
+                }
+                // Long + repeatable on screen rather than buried in logcat,
+                // since logcat isn't easily reachable from an Acode-only setup.
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
