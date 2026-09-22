@@ -8,6 +8,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,9 +45,20 @@ class AuthManager(private val context: Context) {
     fun lastSignedInAccount(): GoogleSignInAccount? =
         GoogleSignIn.getLastSignedInAccount(context)
 
-    fun handleSignInResult(data: Intent?): GoogleSignInAccount? {
-        val task = GoogleSignIn.getSignedInAccountFromIntent(data)
-        return task.result
+    fun handleSignInResult(data: Intent?): Result<GoogleSignInAccount> {
+        return try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                .getResult(ApiException::class.java)
+            Result.success(account)
+        } catch (e: ApiException) {
+            // This is the crash fix: previously we called task.result directly,
+            // which throws (and crashes the app) on any sign-in failure —
+            // most commonly a package name / SHA-1 mismatch between the app
+            // and the OAuth client registered in Cloud Console (status code
+            // 10, DEVELOPER_ERROR), or the account not being on the OAuth
+            // consent screen's test users list.
+            Result.failure(e)
+        }
     }
 
     /**
