@@ -16,10 +16,10 @@ import com.example.drivestreamer.R
 import com.example.drivestreamer.playback.PlaybackClient
 
 /**
- * Shows the currently playing track with live progress, and exposes
- * play/pause/skip. Talks to the same MediaController the library screen
- * uses (via PlaybackClient), so this reflects whatever's actually playing
- * — including if playback was started/changed from Android Auto.
+ * Shows the currently playing track with live progress, transport
+ * controls, and shuffle/repeat toggles. Talks to the same MediaController
+ * the library screen uses (via PlaybackClient), so state here reflects
+ * whatever's actually playing — including changes made from Android Auto.
  */
 class NowPlayingActivity : AppCompatActivity() {
 
@@ -34,6 +34,8 @@ class NowPlayingActivity : AppCompatActivity() {
     private lateinit var seekBar: SeekBar
     private lateinit var playPauseButton: Button
     private lateinit var albumArt: ImageView
+    private lateinit var shuffleButton: Button
+    private lateinit var repeatButton: Button
 
     private var userIsSeeking = false
 
@@ -48,6 +50,8 @@ class NowPlayingActivity : AppCompatActivity() {
         seekBar = findViewById(R.id.seekBar)
         playPauseButton = findViewById(R.id.playPauseButton)
         albumArt = findViewById(R.id.albumArt)
+        shuffleButton = findViewById(R.id.shuffleButton)
+        repeatButton = findViewById(R.id.repeatButton)
 
         findViewById<Button>(R.id.previousButton).setOnClickListener {
             controller?.seekToPrevious()
@@ -57,6 +61,12 @@ class NowPlayingActivity : AppCompatActivity() {
         }
         playPauseButton.setOnClickListener {
             controller?.let { c -> if (c.isPlaying) c.pause() else c.play() }
+        }
+        shuffleButton.setOnClickListener {
+            controller?.let { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled }
+        }
+        repeatButton.setOnClickListener {
+            controller?.let { c -> c.repeatMode = nextRepeatMode(c.repeatMode) }
         }
 
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -78,6 +88,13 @@ class NowPlayingActivity : AppCompatActivity() {
         }
     }
 
+    /** OFF -> ALL -> ONE -> OFF */
+    private fun nextRepeatMode(current: Int): Int = when (current) {
+        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+        else -> Player.REPEAT_MODE_OFF
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
             trackTitle.text = mediaMetadata.title ?: "Unknown title"
@@ -93,6 +110,31 @@ class NowPlayingActivity : AppCompatActivity() {
             controller?.let { seekBar.max = it.duration.coerceAtLeast(0).toInt() }
             totalTime.text = formatMillis(controller?.duration ?: 0L)
         }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            shuffleButton.alpha = if (shuffleModeEnabled) 1f else 0.5f
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            updateRepeatButton(repeatMode)
+        }
+    }
+
+    private fun updateRepeatButton(repeatMode: Int) {
+        when (repeatMode) {
+            Player.REPEAT_MODE_OFF -> {
+                repeatButton.text = "🔁"
+                repeatButton.alpha = 0.5f
+            }
+            Player.REPEAT_MODE_ALL -> {
+                repeatButton.text = "🔁"
+                repeatButton.alpha = 1f
+            }
+            Player.REPEAT_MODE_ONE -> {
+                repeatButton.text = "🔂"
+                repeatButton.alpha = 1f
+            }
+        }
     }
 
     private fun applyArt(mediaMetadata: MediaMetadata) {
@@ -101,8 +143,6 @@ class NowPlayingActivity : AppCompatActivity() {
             val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
             albumArt.setImageBitmap(bitmap)
         } else {
-            // No embedded art on this track, or it hasn't been fetched yet
-            // (MusicService attaches it a moment after playback starts).
             albumArt.setImageDrawable(null)
         }
     }
@@ -114,6 +154,8 @@ class NowPlayingActivity : AppCompatActivity() {
         seekBar.max = c.duration.coerceAtLeast(0).toInt()
         totalTime.text = formatMillis(c.duration)
         applyArt(c.mediaMetadata)
+        shuffleButton.alpha = if (c.shuffleModeEnabled) 1f else 0.5f
+        updateRepeatButton(c.repeatMode)
     }
 
     private fun startProgressUpdates() {
@@ -141,9 +183,6 @@ class NowPlayingActivity : AppCompatActivity() {
     override fun onDestroy() {
         progressUpdater?.let { mainHandler.removeCallbacks(it) }
         controller?.removeListener(playerListener)
-        // Don't release the controller here — PlaybackClient owns its
-        // lifecycle so playback keeps going if the user backs out of
-        // this screen while a track is still playing.
         super.onDestroy()
     }
 }
