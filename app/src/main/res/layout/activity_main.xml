@@ -25,6 +25,32 @@
         android:layout_marginTop="8dp"
         android:text="Load library" />
 
+    <!-- Hidden until a load is in progress. Reading ID3 tags means a
+         network round-trip per track, so this can visibly take a while
+         on a big library — hence a real progress readout, not a spinner
+         with no context. -->
+    <LinearLayout
+        android:id="@+id/loadingRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/loadingSpinner"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            style="?android:attr/progressBarStyleSmall" />
+
+        <TextView
+            android:id="@+id/loadingStatusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="Loading library…" />
+    </LinearLayout>
+
     <ListView
         android:id="@+id/trackListView"
         android:layout_width="match_parent"
