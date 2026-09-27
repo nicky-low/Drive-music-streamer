@@ -2,10 +2,13 @@ package com.example.drivestreamer.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -31,6 +34,10 @@ class MainActivity : AppCompatActivity() {
     private val repository = DriveLibraryRepository()
     private var account: GoogleSignInAccount? = null
     private var loadedAlbums: List<Album> = emptyList()
+
+    private lateinit var loadLibraryButton: Button
+    private lateinit var loadingRow: LinearLayout
+    private lateinit var loadingStatusText: TextView
 
     private val signInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -63,11 +70,14 @@ class MainActivity : AppCompatActivity() {
         account = authManager.lastSignedInAccount()
         account?.let { tokenProvider.setAccount(it) }
 
+        loadLibraryButton = findViewById(R.id.loadLibraryButton)
+        loadingRow = findViewById(R.id.loadingRow)
+        loadingStatusText = findViewById(R.id.loadingStatusText)
+
         findViewById<Button>(R.id.signInButton)
             .setOnClickListener { signInLauncher.launch(authManager.signInIntent()) }
 
-        findViewById<Button>(R.id.loadLibraryButton)
-            .setOnClickListener { loadLibrary() }
+        loadLibraryButton.setOnClickListener { loadLibrary() }
 
         PlaybackClient.connect(this) { /* ready */ }
     }
@@ -83,10 +93,16 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        setLoading(true, "Finding your music…")
+
         lifecycleScope.launch {
             try {
                 val token = tokenProvider.getToken()
-                val albums = repository.loadLibrary(token, folderId)
+                val albums = repository.loadLibrary(token, folderId) { done, total ->
+                    // Called on the Main dispatcher (see repository), safe
+                    // to touch views directly.
+                    loadingStatusText.text = "Reading tags… $done / $total"
+                }
                 loadedAlbums = albums
                 MusicLibraryHolder.albums = albums
 
@@ -98,7 +114,6 @@ class MainActivity : AppCompatActivity() {
                     ).show()
                 }
 
-                // Clean "Artist — Title" labels instead of raw filenames.
                 val trackLabels = albums.flatMap { it.tracks }.map { it.displayLabel }
                 val listView = findViewById<ListView>(R.id.trackListView)
                 listView.adapter = ArrayAdapter(
@@ -122,17 +137,18 @@ class MainActivity : AppCompatActivity() {
                     "Failed to load library: ${e::class.simpleName} — ${e.message}",
                     Toast.LENGTH_LONG
                 ).show()
+            } finally {
+                setLoading(false)
             }
         }
     }
 
-    /**
-     * Queues the WHOLE flattened library as the player's playlist, starting
-     * at the tapped track, rather than a single MediaItem. This is the fix
-     * for playback not advancing — a player with only one item in its
-     * queue has nothing to move to when that item ends, regardless of
-     * repeat mode.
-     */
+    private fun setLoading(loading: Boolean, initialMessage: String = "") {
+        loadLibraryButton.isEnabled = !loading
+        loadingRow.visibility = if (loading) View.VISIBLE else View.GONE
+        if (loading) loadingStatusText.text = initialMessage
+    }
+
     private fun playTrackAt(flatIndex: Int) {
         val allTracks = loadedAlbums.flatMap { it.tracks }
         if (allTracks.isEmpty()) return
