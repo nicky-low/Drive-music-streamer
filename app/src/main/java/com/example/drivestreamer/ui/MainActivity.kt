@@ -76,25 +76,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadLibrary() {
-        val currentAccount = account ?: return
+        val currentAccount = account ?: run {
+            Toast.makeText(this, "Sign in first", Toast.LENGTH_SHORT).show()
+            return
+        }
         val folderId = findViewById<EditText>(R.id.folderIdInput).text.toString().trim()
-        if (folderId.isEmpty()) return
+        if (folderId.isEmpty()) {
+            Toast.makeText(this, "Paste a folder ID first", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         lifecycleScope.launch {
-            val token = tokenProvider.getToken()
-            val albums = repository.loadLibrary(token, folderId)
-            loadedAlbums = albums
-            MusicLibraryHolder.albums = albums
+            try {
+                val token = tokenProvider.getToken()
+                val albums = repository.loadLibrary(token, folderId)
+                loadedAlbums = albums
+                MusicLibraryHolder.albums = albums
 
-            val trackTitles = albums.flatMap { it.tracks }.map { "${it.albumName} — ${it.title}" }
-            val listView = findViewById<ListView>(R.id.trackListView)
-            listView.adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_list_item_1,
-                trackTitles
-            )
-            listView.setOnItemClickListener { _, _, position, _ ->
-                playTrackAt(position)
+                if (albums.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Loaded, but found no audio files in that folder — " +
+                            "double check the folder ID (see note below)",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                val trackTitles = albums.flatMap { it.tracks }.map { "${it.albumName} — ${it.title}" }
+                val listView = findViewById<ListView>(R.id.trackListView)
+                listView.adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_list_item_1,
+                    trackTitles
+                )
+                listView.setOnItemClickListener { _, _, position, _ ->
+                    playTrackAt(position)
+                }
+            } catch (e: retrofit2.HttpException) {
+                // Drive returned a non-2xx response — most often a 403/404
+                // because the folder ID doesn't exist, isn't shared with
+                // this account, or (very commonly) is the shortcut's own ID
+                // rather than the real folder it points to.
+                val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                Toast.makeText(
+                    this@MainActivity,
+                    "Drive error ${e.code()}: ${body ?: e.message()}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Failed to load library: ${e::class.simpleName} — ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
