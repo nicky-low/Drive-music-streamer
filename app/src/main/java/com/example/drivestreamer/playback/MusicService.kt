@@ -27,13 +27,6 @@ import kotlinx.coroutines.launch
  * (see AndroidManifest's <service> + automotive_app_desc.xml), Android Auto
  * will bind to it, call onGetLibraryRoot / onGetChildren to build its
  * browsing UI, and route play/pause/skip commands through the MediaSession.
- *
- * Token handling: the service owns its own TokenProvider rather than
- * reading a token MainActivity fetched once — Google Play Services
- * persists sign-in state on-device, so the service can independently
- * confirm who's signed in and fetch/refresh tokens itself, even if it's
- * started fresh by Android Auto without MainActivity having run first
- * (e.g. after a reboot, or if Auto launches the app directly).
  */
 class MusicService : MediaLibraryService() {
 
@@ -49,8 +42,6 @@ class MusicService : MediaLibraryService() {
         val authManager = AuthManager(applicationContext)
         tokenProvider = TokenProvider(authManager)
 
-        // Reconnect to whichever account is signed in on this device —
-        // works even if MainActivity hasn't run yet this process.
         GoogleSignIn.getLastSignedInAccount(applicationContext)?.let {
             tokenProvider.setAccount(it)
         }
@@ -73,21 +64,21 @@ class MusicService : MediaLibraryService() {
             .build()
     }
 
-    /**
-     * Fetches embedded art for the track that just started playing and
-     * merges it into that MediaItem's metadata. Playback starts immediately
-     * and isn't blocked on this — art appears a moment later once fetched,
-     * updating the lock screen / notification / Android Auto display and
-     * (via onMediaMetadataChanged) our own now-playing screen.
-     */
+    private fun buildCachingDataSourceFactory(): DataSource.Factory {
+        val cache = PlaybackCache.get(applicationContext)
+        val upstreamFactory = GoogleDriveDataSource.Factory(tokenProvider)
+        return CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
     private fun fetchAndAttachArt(mediaItem: MediaItem) {
         val fileId = mediaItem.mediaId
         serviceScope.launch {
             val token = tokenProvider.getToken()
             val artBytes = albumArtLoader.fetchEmbeddedArt(fileId, token) ?: return@launch
 
-            // Bail if the user has already skipped to a different track
-            // by the time this finishes.
             if (player.currentMediaItem?.mediaId != fileId) return@launch
 
             val updatedMetadata = mediaItem.mediaMetadata.buildUpon()
@@ -99,24 +90,6 @@ class MusicService : MediaLibraryService() {
 
             player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
         }
-    }
-
-    /**
-     * Wraps the raw Drive data source in a disk cache: reads are served
-     * from disk if we already have the bytes, and any bytes fetched from
-     * the network are written to disk as they stream past, so the next
-     * play of the same track (or same range, e.g. re-seeking) is instant
-     * and needs no network at all.
-     */
-    private fun buildCachingDataSourceFactory(): DataSource.Factory {
-        val cache = PlaybackCache.get(applicationContext)
-        val upstreamFactory = GoogleDriveDataSource.Factory(tokenProvider)
-        return CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(upstreamFactory)
-            // If disk cache I/O itself fails (corrupt entry, full disk),
-            // fall back to streaming from Drive rather than failing playback.
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
@@ -167,7 +140,8 @@ class MusicService : MediaLibraryService() {
                         .setUri("drive://file/${track.fileId}")
                         .setMediaMetadata(
                             MediaMetadata.Builder()
-                                .setTitle(track.title)
+                                .setTitle(track.displayTitle)
+                                .setArtist(track.displayArtist.ifBlank { null })
                                 .setAlbumTitle(track.albumName)
                                 .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
                                 .setIsBrowsable(false)
@@ -191,10 +165,6 @@ class MusicService : MediaLibraryService() {
                         .setIsBrowsable(true)
                         .setIsPlayable(false)
                         .apply {
-                            // Use the first track's embedded art as the
-                            // album's thumbnail — Drive folders don't carry
-                            // their own cover image, so this is the closest
-                            // stand-in without an extra metadata source.
                             album.tracks.firstOrNull()?.let { firstTrack ->
                                 setArtworkUri(AlbumArtContentProvider.uriFor(firstTrack.fileId))
                             }
@@ -205,13 +175,6 @@ class MusicService : MediaLibraryService() {
     }
 }
 
-/**
- * Simple in-memory bridge between MainActivity (where library loading
- * happens) and the service (which needs the track list to browse/stream).
- * Fine for a personal single-user app. The access token itself no longer
- * lives here — see TokenProvider, which each component fetches its own
- * instance of.
- */
 object MusicLibraryHolder {
     var albums: List<Album> = emptyList()
 }
