@@ -13,9 +13,15 @@ data class Album(
 
 data class Track(
     val fileId: String,
-    val title: String,
-    val albumName: String
-)
+    val rawFileName: String,
+    val albumName: String,
+    val displayArtist: String,
+    val displayTitle: String
+) {
+    /** "Artist — Title" if we found an artist, otherwise just the title. */
+    val displayLabel: String
+        get() = if (displayArtist.isNotBlank()) "$displayArtist — $displayTitle" else displayTitle
+}
 
 class DriveLibraryRepository {
 
@@ -35,39 +41,41 @@ class DriveLibraryRepository {
             .create(DriveApi::class.java)
     }
 
-    /**
-     * Walks the given root folder one level for albums (subfolders),
-     * then walks each album folder for audio tracks.
-     *
-     * rootFolderId = the ID of your shared music folder (or the shortcut's
-     * target ID) in the BUFFER account's Drive.
-     */
     suspend fun loadLibrary(accessToken: String, rootFolderId: String): List<Album> {
         val bearer = "Bearer $accessToken"
         val albums = mutableListOf<Album>()
 
         val topLevel = listAllChildren(bearer, rootFolderId)
 
-        // Folders directly under root are treated as albums.
         val albumFolders = topLevel.filter { it.isFolder }
         for (folder in albumFolders) {
             val album = Album(folderId = folder.id, name = folder.name)
             val children = listAllChildren(bearer, folder.id)
             children.filter { it.isAudio }.forEach { audioFile ->
-                album.tracks.add(Track(audioFile.id, audioFile.name, album.name))
+                album.tracks.add(buildTrack(audioFile, album.name))
             }
             if (album.tracks.isNotEmpty()) albums.add(album)
         }
 
-        // Also handle audio files sitting directly in the root (no album folder).
         val rootAudio = topLevel.filter { it.isAudio }
         if (rootAudio.isNotEmpty()) {
             val loose = Album(folderId = rootFolderId, name = "Loose tracks")
-            rootAudio.forEach { loose.tracks.add(Track(it.id, it.name, loose.name)) }
+            rootAudio.forEach { loose.tracks.add(buildTrack(it, loose.name)) }
             albums.add(loose)
         }
 
         return albums
+    }
+
+    private fun buildTrack(audioFile: DriveFile, albumName: String): Track {
+        val (artist, title) = TrackNameParser.parse(audioFile.name)
+        return Track(
+            fileId = audioFile.id,
+            rawFileName = audioFile.name,
+            albumName = albumName,
+            displayArtist = artist,
+            displayTitle = title
+        )
     }
 
     private suspend fun listAllChildren(bearer: String, folderId: String): List<DriveFile> {

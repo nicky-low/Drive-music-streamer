@@ -6,9 +6,6 @@
     android:gravity="center_horizontal"
     android:padding="24dp">
 
-    <!-- Shows embedded album art once MusicService fetches and attaches
-         it to the session metadata; falls back to a plain background
-         (set in code) if the track has no embedded art. -->
     <ImageView
         android:id="@+id/albumArt"
         android:layout_width="240dp"
@@ -91,6 +88,29 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="⏭" />
+    </LinearLayout>
+
+    <!-- Shuffle and repeat, as a second row of secondary controls -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center_vertical">
+
+        <Button
+            android:id="@+id/shuffleButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:alpha="0.5"
+            android:text="🔀" />
+
+        <Button
+            android:id="@+id/repeatButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:alpha="0.5"
+            android:text="🔁" />
     </LinearLayout>
 
 </LinearLayout>
