@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
@@ -47,8 +48,6 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     "Sign-in failed: ${e.message}"
                 }
-                // Long + repeatable on screen rather than buried in logcat,
-                // since logcat isn't easily reachable from an Acode-only setup.
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             }
         )
@@ -70,8 +69,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.loadLibraryButton)
             .setOnClickListener { loadLibrary() }
 
-        // Connect early so playback starts instantly on the first tap
-        // rather than waiting for the binder connection at that point.
         PlaybackClient.connect(this) { /* ready */ }
     }
 
@@ -96,27 +93,23 @@ class MainActivity : AppCompatActivity() {
                 if (albums.isEmpty()) {
                     Toast.makeText(
                         this@MainActivity,
-                        "Loaded, but found no audio files in that folder — " +
-                            "double check the folder ID (see note below)",
+                        "Loaded, but found no audio files in that folder",
                         Toast.LENGTH_LONG
                     ).show()
                 }
 
-                val trackTitles = albums.flatMap { it.tracks }.map { "${it.albumName} — ${it.title}" }
+                // Clean "Artist — Title" labels instead of raw filenames.
+                val trackLabels = albums.flatMap { it.tracks }.map { it.displayLabel }
                 val listView = findViewById<ListView>(R.id.trackListView)
                 listView.adapter = ArrayAdapter(
                     this@MainActivity,
                     android.R.layout.simple_list_item_1,
-                    trackTitles
+                    trackLabels
                 )
                 listView.setOnItemClickListener { _, _, position, _ ->
                     playTrackAt(position)
                 }
             } catch (e: retrofit2.HttpException) {
-                // Drive returned a non-2xx response — most often a 403/404
-                // because the folder ID doesn't exist, isn't shared with
-                // this account, or (very commonly) is the shortcut's own ID
-                // rather than the real folder it points to.
                 val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
                 Toast.makeText(
                     this@MainActivity,
@@ -133,16 +126,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Queues the WHOLE flattened library as the player's playlist, starting
+     * at the tapped track, rather than a single MediaItem. This is the fix
+     * for playback not advancing — a player with only one item in its
+     * queue has nothing to move to when that item ends, regardless of
+     * repeat mode.
+     */
     private fun playTrackAt(flatIndex: Int) {
         val allTracks = loadedAlbums.flatMap { it.tracks }
-        val track = allTracks.getOrNull(flatIndex) ?: return
-        val mediaItem = MediaItem.Builder()
-            .setMediaId(track.fileId)
-            .setUri("drive://file/${track.fileId}")
-            .build()
+        if (allTracks.isEmpty()) return
+
+        val mediaItems = allTracks.map { track ->
+            MediaItem.Builder()
+                .setMediaId(track.fileId)
+                .setUri("drive://file/${track.fileId}")
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(track.displayTitle)
+                        .setArtist(track.displayArtist.ifBlank { null })
+                        .setAlbumTitle(track.albumName)
+                        .build()
+                )
+                .build()
+        }
 
         PlaybackClient.connect(this) { controller ->
-            controller.setMediaItem(mediaItem)
+            controller.setMediaItems(mediaItems, flatIndex, 0L)
             controller.prepare()
             controller.play()
             startActivity(Intent(this, NowPlayingActivity::class.java))
