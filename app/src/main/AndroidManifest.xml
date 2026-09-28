@@ -4,6 +4,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Needed on Android 13+ for the library-loading progress
+         notification to actually show; the service still runs and
+         completes without it, it just won't have a visible notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -11,7 +16,6 @@
         android:label="Drive Streamer"
         android:theme="@style/Theme.DriveStreamer">
 
-        <!-- Marks this app as visible/browsable to Android Auto -->
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
@@ -31,8 +35,7 @@
             android:exported="false"
             android:parentActivityName=".ui.MainActivity" />
 
-        <!-- The MediaBrowserService is what Android Auto actually binds to.
-             This is the same pattern Google's own reference music app uses. -->
+        <!-- The MediaBrowserService is what Android Auto actually binds to. -->
         <service
             android:name=".playback.MusicService"
             android:exported="true"
@@ -42,6 +45,13 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Runs the (potentially long) library load independently of
+             MainActivity's lifecycle — see LibraryLoadService for why. -->
+        <service
+            android:name=".playback.LibraryLoadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Serves album art lazily to Android Auto's browse list via
              content URIs — see AlbumArtContentProvider for why this is
