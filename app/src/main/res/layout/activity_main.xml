@@ -25,10 +25,6 @@
         android:layout_marginTop="8dp"
         android:text="Load library" />
 
-    <!-- Hidden until a load is in progress. Reading ID3 tags means a
-         network round-trip per track, so this can visibly take a while
-         on a big library — hence a real progress readout, not a spinner
-         with no context. -->
     <LinearLayout
         android:id="@+id/loadingRow"
         android:layout_width="match_parent"
@@ -51,11 +47,36 @@
             android:text="Loading library…" />
     </LinearLayout>
 
+    <!-- Folder/album browsing row: back button (hidden at top level)
+         plus a title showing "Albums" or the currently open album. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center_vertical">
+
+        <Button
+            android:id="@+id/backButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="← Back"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/listTitleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:textStyle="bold"
+            android:textSize="16sp"
+            android:text="Albums" />
+    </LinearLayout>
+
     <ListView
         android:id="@+id/trackListView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="12dp" />
+        android:layout_marginTop="4dp" />
 
 </LinearLayout>
