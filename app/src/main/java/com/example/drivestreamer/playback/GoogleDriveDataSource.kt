@@ -14,11 +14,6 @@ import java.io.InputStream
 /**
  * Streams a single Drive file's bytes on demand, using HTTP Range headers
  * so ExoPlayer can seek without re-downloading from the start.
- *
- * Token handling: pulls from TokenProvider, which caches + proactively
- * refreshes. If a request still comes back 401 (e.g. token expired right
- * at the edge of the refresh window, or was revoked), we invalidate and
- * retry once with a forced-fresh token before giving up.
  */
 class GoogleDriveDataSource(
     private val tokenProvider: TokenProvider
@@ -50,7 +45,19 @@ class GoogleDriveDataSource(
 
         while (true) {
             attempt++
-            val token = tokenProvider.blockingGetToken(forceRefresh = attempt > 1)
+
+            // Any failure here (not signed in yet, token refresh network
+            // error, etc.) is wrapped as a plain IOException — that's the
+            // type ExoPlayer's loading pipeline actually knows how to
+            // handle gracefully via Player.Listener.onPlayerError. Letting
+            // a raw IllegalStateException or ApiException escape from here
+            // risks it going uncaught and crashing the whole app instead
+            // of just failing this one track load.
+            val token = try {
+                tokenProvider.blockingGetToken(forceRefresh = attempt > 1)
+            } catch (e: Exception) {
+                throw IOException("Couldn't get an access token to stream this track", e)
+            }
 
             val requestBuilder = Request.Builder()
                 .url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
@@ -70,7 +77,6 @@ class GoogleDriveDataSource(
             resp.close()
 
             if (isAuthError && attempt < 2) {
-                // Token was stale/revoked — loop around and force a fresh one.
                 continue
             }
 
