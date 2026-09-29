@@ -1,5 +1,7 @@
 package com.example.drivestreamer.playback
 
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -51,6 +53,20 @@ class MusicService : MediaLibraryService() {
                 androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
                     buildCachingDataSourceFactory()
                 )
+            )
+            .setAudioAttributes(
+                // This is the actual fix for "plays at the same time as
+                // whatever was already playing": without an explicit,
+                // correctly-typed AudioAttributes + handleAudioFocus=true,
+                // ExoPlayer doesn't reliably request focus, so the OS never
+                // tells the other app to pause. USAGE_MEDIA + CONTENT_TYPE_MUSIC
+                // is what marks this as "real" foreground music playback
+                // rather than e.g. a notification sound.
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ true
             )
             .build()
 
