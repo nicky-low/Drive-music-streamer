@@ -1,28 +1,32 @@
 package com.example.drivestreamer.auth
 
 import android.util.Log
-import com.google.android.gms.auth.GoogleAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.io.IOException
 
 /**
  * Wraps AuthManager with caching + proactive refresh, so playback doesn't
  * hit expired tokens mid-track. Drive OAuth access tokens are typically
  * valid ~1 hour; we refresh a bit early to stay safe.
  *
- * Two entry points:
- *  - suspend getToken(): for callers already on a coroutine (e.g. UI/library load)
- *  - blockingGetToken(): for ExoPlayer's DataSource, which opens on a
- *    background loading thread but isn't coroutine-based
+ * [accountResolver] is a fallback, checked lazily the moment a token is
+ * actually requested — not just once at construction time. This matters
+ * because MusicService connects (and builds its TokenProvider) the
+ * instant MainActivity launches, which on a fresh install can happen
+ * BEFORE the user has signed in yet. Without this fallback, that one
+ * early check finding "not signed in" would be final — the service
+ * would never look again, even after sign-in later succeeds in the same
+ * session. Re-checking at point of use fixes that: by the time playback
+ * actually starts, sign-in has long since completed.
  */
-class TokenProvider(private val authManager: AuthManager) {
+class TokenProvider(
+    private val authManager: AuthManager,
+    private val accountResolver: () -> GoogleSignInAccount? = { null }
+) {
 
     companion object {
         private const val TAG = "TokenProvider"
-        // Refresh if the cached token is older than this, even if it
-        // hasn't technically expired yet — avoids racing expiry mid-stream.
         private const val REFRESH_MARGIN_MS = 45 * 60 * 1000L // 45 minutes
     }
 
@@ -33,12 +37,15 @@ class TokenProvider(private val authManager: AuthManager) {
 
     fun setAccount(account: GoogleSignInAccount) {
         this.account = account
-        // Force a fresh fetch next time — new sign-in, old cache is invalid.
         cachedToken = null
     }
 
     suspend fun getToken(forceRefresh: Boolean = false): String {
-        val acct = account ?: throw IllegalStateException("No signed-in account set on TokenProvider")
+        // Lazy fallback: if nothing was set eagerly (or the eager check
+        // ran too early, before sign-in completed), try resolving again
+        // right now rather than failing immediately.
+        val acct = account ?: accountResolver()?.also { account = it }
+            ?: throw IllegalStateException("No signed-in account available yet")
 
         mutex.withLock {
             val isStale = forceRefresh ||
