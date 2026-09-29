@@ -106,6 +106,14 @@ class NowPlayingActivity : AppCompatActivity() {
             playPauseButton.text = if (isPlaying) "⏸" else "▶"
         }
 
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            android.widget.Toast.makeText(
+                this@NowPlayingActivity,
+                "Playback error: ${error.message}",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             controller?.let { seekBar.max = it.duration.coerceAtLeast(0).toInt() }
             totalTime.text = formatMillis(controller?.duration ?: 0L)
