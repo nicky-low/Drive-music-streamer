@@ -42,8 +42,13 @@ class MusicService : MediaLibraryService() {
         super.onCreate()
 
         val authManager = AuthManager(applicationContext)
-        tokenProvider = TokenProvider(authManager)
+        tokenProvider = TokenProvider(authManager) {
+            GoogleSignIn.getLastSignedInAccount(applicationContext)
+        }
 
+        // Also try eagerly now — harmless if it's too early (the lazy
+        // resolver above covers that case), useful if sign-in already
+        // happened before this service was created.
         GoogleSignIn.getLastSignedInAccount(applicationContext)?.let {
             tokenProvider.setAccount(it)
         }

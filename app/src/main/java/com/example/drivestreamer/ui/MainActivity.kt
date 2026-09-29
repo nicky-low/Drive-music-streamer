@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadLibraryButton: Button
     private lateinit var loadingRow: LinearLayout
     private lateinit var loadingStatusText: TextView
+    private lateinit var cancelLoadButton: Button
     private lateinit var backButton: Button
     private lateinit var listTitleText: TextView
     private lateinit var listView: ListView
@@ -90,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         loadLibraryButton = findViewById(R.id.loadLibraryButton)
         loadingRow = findViewById(R.id.loadingRow)
         loadingStatusText = findViewById(R.id.loadingStatusText)
+        cancelLoadButton = findViewById(R.id.cancelLoadButton)
         backButton = findViewById(R.id.backButton)
         listTitleText = findViewById(R.id.listTitleText)
         listView = findViewById(R.id.trackListView)
@@ -99,6 +101,14 @@ class MainActivity : AppCompatActivity() {
 
         loadLibraryButton.setOnClickListener { startLibraryLoad() }
         backButton.setOnClickListener { showAlbumList() }
+        cancelLoadButton.setOnClickListener {
+            // Sends the cancel action to the already-running service —
+            // its own coroutine catches the resulting cancellation and
+            // handles cleanup, so this is just "ask it to stop".
+            val cancelIntent = Intent(this, LibraryLoadService::class.java)
+                .setAction(LibraryLoadService.ACTION_CANCEL)
+            startService(cancelIntent)
+        }
 
         onBackPressedDispatcher.addCallback(this) {
             if (openAlbumIndex != null) {
@@ -149,6 +159,10 @@ class MainActivity : AppCompatActivity() {
             is LibraryLoadState.Status.Error -> {
                 setLoadingUi(false)
                 Toast.makeText(this, "Failed to load library: ${status.message}", Toast.LENGTH_LONG).show()
+            }
+            is LibraryLoadState.Status.Cancelled -> {
+                setLoadingUi(false)
+                Toast.makeText(this, "Loading cancelled", Toast.LENGTH_SHORT).show()
             }
         }
     }
