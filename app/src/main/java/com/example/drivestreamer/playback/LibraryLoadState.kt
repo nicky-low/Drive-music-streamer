@@ -20,6 +20,7 @@ object LibraryLoadState {
         data class Loading(val done: Int, val total: Int) : Status()
         data class Complete(val albums: List<Album>) : Status()
         data class Error(val message: String) : Status()
+        data object Cancelled : Status()
     }
 
     private val _status = MutableStateFlow<Status>(Status.Idle)
