@@ -1,5 +1,6 @@
 package com.example.drivestreamer.drive
 
+import com.example.drivestreamer.auth.TokenProvider
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -54,11 +55,14 @@ class DriveLibraryRepository {
     }
 
     suspend fun loadLibrary(
-        accessToken: String,
+        tokenProvider: TokenProvider,
         rootFolderId: String,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
     ): List<Album> {
-        val bearer = "Bearer $accessToken"
+        // One token is fine for the folder walk below — even on a huge
+        // tree it's metadata-only calls and finishes in seconds, well
+        // inside any reasonable token lifetime.
+        val bearer = "Bearer ${tokenProvider.getToken()}"
 
         // Walk the whole tree first (cheap, metadata-only calls) to find
         // every folder that directly contains audio — at any depth, not
@@ -77,7 +81,15 @@ class DriveLibraryRepository {
             pending.map { (folderId, file) ->
                 async {
                     val track = semaphore.withPermit {
-                        buildTrack(file, albumsByFolderId.getValue(folderId).name, accessToken)
+                        // Fetched fresh per track rather than reusing the
+                        // token grabbed above — on a library this size the
+                        // tag-reading phase alone can run well past an
+                        // hour, long enough for that earlier token to
+                        // expire mid-run. TokenProvider caches internally,
+                        // so this is a cheap no-op call except when an
+                        // actual refresh is due.
+                        val freshToken = tokenProvider.getToken()
+                        buildTrack(file, albumsByFolderId.getValue(folderId).name, freshToken)
                     }
                     progressMutex.withLock {
                         done++
