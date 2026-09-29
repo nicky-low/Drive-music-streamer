@@ -49,7 +49,9 @@ class LibraryLoadService : Service() {
     override fun onCreate() {
         super.onCreate()
         val authManager = AuthManager(applicationContext)
-        tokenProvider = TokenProvider(authManager)
+        tokenProvider = TokenProvider(authManager) {
+            GoogleSignIn.getLastSignedInAccount(applicationContext)
+        }
         GoogleSignIn.getLastSignedInAccount(applicationContext)?.let {
             tokenProvider.setAccount(it)
         }
