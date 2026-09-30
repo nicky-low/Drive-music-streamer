@@ -21,7 +21,7 @@
             android:resource="@xml/automotive_app_desc" />
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".ui.LoginActivity"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>
@@ -31,9 +31,14 @@
         </activity>
 
         <activity
+            android:name=".ui.LibraryActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <activity
             android:name=".ui.NowPlayingActivity"
             android:exported="false"
-            android:parentActivityName=".ui.MainActivity" />
+            android:parentActivityName=".ui.LibraryActivity" />
 
         <!-- The MediaBrowserService is what Android Auto actually binds to. -->
         <service
@@ -47,7 +52,7 @@
         </service>
 
         <!-- Runs the (potentially long) library load independently of
-             MainActivity's lifecycle — see LibraryLoadService for why. -->
+             LibraryActivity's lifecycle — see LibraryLoadService for why. -->
         <service
             android:name=".playback.LibraryLoadService"
             android:exported="false"
