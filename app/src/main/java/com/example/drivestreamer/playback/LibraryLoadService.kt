@@ -13,6 +13,7 @@ import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.DriveLibraryRepository
+import com.example.drivestreamer.drive.LibraryCacheStore
 import com.example.drivestreamer.ui.LibraryActivity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.CoroutineScope
@@ -86,6 +87,7 @@ class LibraryLoadService : Service() {
                     }
                 }
                 MusicLibraryHolder.albums = albums
+                LibraryCacheStore(applicationContext).save(folderId, albums)
                 LibraryLoadState.update(LibraryLoadState.Status.Complete(albums))
             } catch (e: kotlinx.coroutines.CancellationException) {
                 LibraryLoadState.update(LibraryLoadState.Status.Cancelled)

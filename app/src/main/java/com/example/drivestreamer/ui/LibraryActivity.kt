@@ -27,6 +27,7 @@ import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.Album
+import com.example.drivestreamer.drive.LibraryCacheStore
 import com.example.drivestreamer.playback.LibraryLoadService
 import com.example.drivestreamer.playback.LibraryLoadState
 import com.example.drivestreamer.playback.PlaybackClient
@@ -61,6 +62,8 @@ class LibraryActivity : AppCompatActivity() {
     private lateinit var listTitleText: TextView
     private lateinit var listView: ListView
     private lateinit var accountText: TextView
+    private lateinit var cacheInfoText: TextView
+    private lateinit var cacheStore: LibraryCacheStore
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -92,6 +95,8 @@ class LibraryActivity : AppCompatActivity() {
         listTitleText = findViewById(R.id.listTitleText)
         listView = findViewById(R.id.trackListView)
         accountText = findViewById(R.id.accountText)
+        cacheInfoText = findViewById(R.id.cacheInfoText)
+        cacheStore = LibraryCacheStore(this)
 
         accountText.text = account?.email ?: ""
         findViewById<Button>(R.id.signOutButton).setOnClickListener { signOut() }
@@ -115,12 +120,33 @@ class LibraryActivity : AppCompatActivity() {
 
         PlaybackClient.connect(this) { /* ready */ }
 
+        // Show whatever was cached from last time immediately — no
+        // network call, no waiting on tag reads. A fresh "Load library"
+        // tap still does a full re-scan and overwrites this when done.
+        loadFromCacheIfPresent()
+
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 LibraryLoadState.status.collect { status -> render(status) }
             }
         }
     }
+
+    private fun loadFromCacheIfPresent() {
+        lifecycleScope.launch {
+            val cached = cacheStore.load() ?: return@launch
+            // Don't clobber an already-in-progress or just-finished load
+            // (e.g. this activity was recreated while a load was running).
+            if (LibraryLoadState.status.value !is LibraryLoadState.Status.Idle) return@launch
+
+            albums = cached.albums
+            findViewById<EditText>(R.id.folderIdInput).setText(cached.folderId)
+            val relativeTime = android.text.format.DateUtils.getRelativeTimeSpanString(
+                cached.savedAtMillis, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS
+            )
+            cacheInfoText.text = "Showing cached library from $relativeTime — tap Load library to refresh"
+            showAlbumList()
+        }
 
     private fun signOut() {
         authManager.signOut()
@@ -133,6 +159,7 @@ class LibraryActivity : AppCompatActivity() {
             is LibraryLoadState.Status.Idle -> setLoadingUi(false)
             is LibraryLoadState.Status.Loading -> {
                 setLoadingUi(true)
+                cacheInfoText.text = ""
                 loadingStatusText.text = if (status.total > 0) {
                     "Reading tags… ${status.done} / ${status.total}"
                 } else {
@@ -147,6 +174,7 @@ class LibraryActivity : AppCompatActivity() {
                         this, "Loaded, but found no audio files in that folder", Toast.LENGTH_LONG
                     ).show()
                 }
+                cacheInfoText.text = "Just updated"
                 albumListScrollState = null
                 showAlbumList()
             }

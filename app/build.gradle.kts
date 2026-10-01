@@ -17,10 +17,6 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            // Fixed keystore, committed to the repo, so the SHA-1 stays
-            // the same whether you build locally or via GitHub Actions —
-            // that's what lets you register it with Google Cloud Console
-            // once and have it keep working from any machine/CI runner.
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -68,9 +64,11 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
+    // Explicit rather than relying on retrofit's transitive copy — used
+    // directly by LibraryCacheStore for local JSON persistence.
+    implementation("com.google.code.gson:gson:2.11.0")
 
     implementation("androidx.media:media:1.7.0")
 
-    // Explicit — used directly in TokenProvider/AuthManager (Mutex, runBlocking, Dispatchers)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
