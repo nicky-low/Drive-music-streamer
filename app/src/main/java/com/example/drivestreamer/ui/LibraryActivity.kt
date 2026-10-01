@@ -147,6 +147,7 @@ class LibraryActivity : AppCompatActivity() {
             cacheInfoText.text = "Showing cached library from $relativeTime — tap Load library to refresh"
             showAlbumList()
         }
+    }
 
     private fun signOut() {
         authManager.signOut()
