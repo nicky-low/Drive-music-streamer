@@ -27,6 +27,11 @@ class AlbumArtLoader {
         // known-untagged file every time it scrolls into view.
         private val cache = LruCache<String, ByteArray>(40)
         private val NO_ART = ByteArray(0)
+
+        /** Drops every cached image (and "no art" marker), e.g. on sign-out. */
+        fun clearCache() {
+            cache.evictAll()
+        }
     }
 
     suspend fun fetchEmbeddedArt(fileId: String, accessToken: String): ByteArray? =
