@@ -25,6 +25,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
+import com.example.drivestreamer.auth.SignOutCleanup
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.Album
 import com.example.drivestreamer.drive.LibraryCacheStore
@@ -150,9 +151,18 @@ class LibraryActivity : AppCompatActivity() {
     }
 
     private fun signOut() {
-        authManager.signOut()
-        startActivity(Intent(this, LoginActivity::class.java))
-        finish()
+        val signOutButton = findViewById<Button>(R.id.signOutButton)
+        signOutButton.isEnabled = false
+        signOutButton.text = "Signing out…"
+
+        // Everything finishes before we leave this screen, so the
+        // lifecycle scope is still alive and LoginActivity can't see a
+        // half-signed-out state.
+        lifecycleScope.launch {
+            SignOutCleanup.run(applicationContext, authManager)
+            startActivity(Intent(this@LibraryActivity, LoginActivity::class.java))
+            finish()
+        }
     }
 
     private fun render(status: LibraryLoadState.Status) {
@@ -227,7 +237,7 @@ class LibraryActivity : AppCompatActivity() {
         backButton.visibility = View.GONE
         listTitleText.text = "Albums"
 
-        val labels = albums.map { "${it.name} (${it.tracks.size})" }
+        val labels = albums.map { it.name }
         listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         listView.setOnItemClickListener { _, _, position, _ -> showTracksForAlbum(position) }
 

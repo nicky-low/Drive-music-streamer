@@ -28,7 +28,20 @@ class TokenProvider(
     companion object {
         private const val TAG = "TokenProvider"
         private const val REFRESH_MARGIN_MS = 45 * 60 * 1000L // 45 minutes
+
+        // Bumped on sign-out. Every TokenProvider in the process (the
+        // service's, the art provider's, ...) notices the change the next
+        // time it's asked for a token, and drops its cached account and
+        // token instead of carrying on as the previous user. Only touched
+        // from the main thread, once per sign-out.
+        @Volatile private var sessionEpoch = 0L
+
+        fun invalidateAll() {
+            sessionEpoch++
+        }
     }
+
+    @Volatile private var epochSeen: Long = sessionEpoch
 
     @Volatile private var cachedToken: String? = null
     @Volatile private var cachedAt: Long = 0L
@@ -41,6 +54,16 @@ class TokenProvider(
     }
 
     suspend fun getToken(forceRefresh: Boolean = false): String {
+        // A sign-out happened since we last looked: forget the old
+        // account/token. The resolver below then finds the new account,
+        // or nothing at all if nobody is signed in.
+        val epoch = sessionEpoch
+        if (epochSeen != epoch) {
+            account = null
+            cachedToken = null
+            epochSeen = epoch
+        }
+
         // Lazy fallback: if nothing was set eagerly (or the eager check
         // ran too early, before sign-in completed), try resolving again
         // right now rather than failing immediately.

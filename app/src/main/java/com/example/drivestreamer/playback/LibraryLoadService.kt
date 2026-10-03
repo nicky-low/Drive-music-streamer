@@ -86,7 +86,7 @@ class LibraryLoadService : Service() {
                         updateNotification("Reading tags…", done, total)
                     }
                 }
-                MusicLibraryHolder.albums = albums
+                MusicLibraryHolder.replace(albums)
                 LibraryCacheStore(applicationContext).save(folderId, albums)
                 LibraryLoadState.update(LibraryLoadState.Status.Complete(albums))
             } catch (e: kotlinx.coroutines.CancellationException) {
