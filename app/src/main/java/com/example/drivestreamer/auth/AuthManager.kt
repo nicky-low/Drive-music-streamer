@@ -11,7 +11,9 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 /**
  * Requests ONLY drive.readonly — read access to files, no write/delete,
@@ -82,5 +84,18 @@ class AuthManager(private val context: Context) {
 
     fun signOut() {
         client.signOut()
+    }
+
+    /**
+     * Same as [signOut] but suspends until Play Services has actually
+     * finished. LoginActivity skips itself whenever lastSignedInAccount()
+     * is non-null, so launching it before sign-out completes could bounce
+     * straight back into the library. Resumes on failure too, so a
+     * failed sign-out can't leave the UI stuck.
+     */
+    suspend fun signOutAndAwait() = suspendCancellableCoroutine<Unit> { cont ->
+        client.signOut().addOnCompleteListener {
+            if (cont.isActive) cont.resume(Unit)
+        }
     }
 }
