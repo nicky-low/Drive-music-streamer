@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -28,6 +30,22 @@ object PlaybackCache {
     fun get(context: Context): SimpleCache {
         return cache ?: synchronized(this) {
             cache ?: buildCache(context.applicationContext).also { cache = it }
+        }
+    }
+
+    /**
+     * Deletes every cached audio byte. Goes through the open SimpleCache
+     * (rather than deleting the directory) because the cache holds the
+     * directory locked and keeps its own index of what's inside it.
+     */
+    suspend fun clear(context: Context) = withContext(Dispatchers.IO) {
+        val c = get(context)
+        for (key in c.keys.toList()) {
+            try {
+                c.removeResource(key)
+            } catch (e: Exception) {
+                // One undeletable entry shouldn't stop the rest.
+            }
         }
     }
 
