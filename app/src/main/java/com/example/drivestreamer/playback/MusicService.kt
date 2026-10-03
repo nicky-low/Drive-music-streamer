@@ -1,5 +1,6 @@
 package com.example.drivestreamer.playback
 
+import android.content.Context
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -15,14 +16,20 @@ import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.Album
 import com.example.drivestreamer.drive.AlbumArtLoader
+import com.example.drivestreamer.drive.LibraryCacheStore
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.google.common.util.concurrent.SettableFuture
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * This service is the bridge to Android Auto. Once it's registered
@@ -83,6 +90,43 @@ class MusicService : MediaLibraryService() {
 
         mediaSession = MediaLibrarySession.Builder(this, player, LibraryCallback())
             .build()
+
+        // Android Auto can start this service cold (after a reboot or the
+        // process being killed) without LibraryActivity ever running, in
+        // which case MusicLibraryHolder is empty. Warm it from the on-disk
+        // cache right away so the first browse request is usually instant.
+        // onGetChildren also awaits this (see below), so a browse request
+        // that arrives mid-load waits instead of seeing an empty library.
+        serviceScope.launch { MusicLibraryHolder.ensureLoaded(applicationContext) }
+
+        // When the library is replaced (fresh scan) or cleared (sign-out),
+        // tell any connected browser — Android Auto — to re-fetch the root
+        // list instead of showing a stale one.
+        MusicLibraryHolder.addListener(libraryChangedListener)
+    }
+
+    private val libraryChangedListener: () -> Unit = {
+        mediaSession.notifyChildrenChanged("root", MusicLibraryHolder.albums.size, null)
+    }
+
+    /** Bridges a suspend block to the ListenableFuture the Media3 callbacks expect. */
+    private fun <T> futureOf(block: suspend () -> T): ListenableFuture<T> {
+        val future = SettableFuture.create<T>()
+        val job = serviceScope.launch {
+            try {
+                future.set(block())
+            } catch (e: CancellationException) {
+                future.cancel(false)
+                throw e
+            } catch (e: Exception) {
+                future.setException(e)
+            }
+        }
+        future.addListener(
+            { if (future.isCancelled) job.cancel() },
+            MoreExecutors.directExecutor()
+        )
+        return future
     }
 
     private fun buildCachingDataSourceFactory(): DataSource.Factory {
@@ -117,6 +161,7 @@ class MusicService : MediaLibraryService() {
         mediaSession
 
     override fun onDestroy() {
+        MusicLibraryHolder.removeListener(libraryChangedListener)
         serviceScope.cancel()
         mediaSession.release()
         player.release()
@@ -151,30 +196,36 @@ class MusicService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> {
-            val items = if (parentId == "root") {
-                MusicLibraryHolder.albums.map { album -> albumToMediaItem(album) }
-            } else {
-                val album = MusicLibraryHolder.albums.find { it.folderId == parentId }
-                album?.tracks?.map { track ->
-                    MediaItem.Builder()
-                        .setMediaId(track.fileId)
-                        .setUri("drive://file/${track.fileId}")
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(track.displayTitle)
-                                .setArtist(track.displayArtist.ifBlank { null })
-                                .setAlbumTitle(track.albumName)
-                                .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
-                                .setIsBrowsable(false)
-                                .setIsPlayable(true)
-                                .build()
-                        )
-                        .build()
-                } ?: emptyList()
+            return futureOf {
+                // No-op if already in memory; otherwise reads the cache.
+                MusicLibraryHolder.ensureLoaded(applicationContext)
+                val albums = MusicLibraryHolder.albums
+
+                val items = if (parentId == "root") {
+                    albums.map { album -> albumToMediaItem(album) }
+                } else {
+                    val album = albums.find { it.folderId == parentId }
+                    album?.tracks?.map { track ->
+                        MediaItem.Builder()
+                            .setMediaId(track.fileId)
+                            .setUri("drive://file/${track.fileId}")
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(track.displayTitle)
+                                    .setArtist(track.displayArtist.ifBlank { null })
+                                    .setAlbumTitle(track.albumName)
+                                    .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
+                                    .setIsBrowsable(false)
+                                    .setIsPlayable(true)
+                                    .build()
+                            )
+                            .build()
+                    } ?: emptyList()
+                }
+                LibraryResult.ofItemList(
+                    com.google.common.collect.ImmutableList.copyOf(items), params
+                )
             }
-            return Futures.immediateFuture(
-                LibraryResult.ofItemList(com.google.common.collect.ImmutableList.copyOf(items), params)
-            )
         }
 
         private fun albumToMediaItem(album: Album): MediaItem =
@@ -197,5 +248,40 @@ class MusicService : MediaLibraryService() {
 }
 
 object MusicLibraryHolder {
+    @Volatile
     var albums: List<Album> = emptyList()
+        private set
+
+    private val loadMutex = Mutex()
+    private val listeners = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
+
+    /** Called whenever [albums] is replaced or cleared (not on a cache warm-up). */
+    fun addListener(listener: () -> Unit) { listeners.add(listener) }
+    fun removeListener(listener: () -> Unit) { listeners.remove(listener) }
+
+    /** A fresh scan finished: swap in the new library and tell listeners. */
+    fun replace(newAlbums: List<Album>) {
+        albums = newAlbums
+        listeners.forEach { it() }
+    }
+
+    /** Sign-out: empty the library. Waits for any in-flight cache read first. */
+    suspend fun clear() {
+        loadMutex.withLock { replace(emptyList()) }
+    }
+
+    /**
+     * Fills [albums] from the on-disk cache if nothing is in memory yet.
+     * Safe to call repeatedly and from several places at once: later
+     * callers wait on the mutex, then see the already-loaded list. A fresh
+     * scan finishing in the meantime wins over the cache.
+     */
+    suspend fun ensureLoaded(context: Context) {
+        if (albums.isNotEmpty()) return
+        loadMutex.withLock {
+            if (albums.isNotEmpty()) return
+            val cached = LibraryCacheStore(context.applicationContext).load() ?: return
+            if (albums.isEmpty()) albums = cached.albums
+        }
+    }
 }
