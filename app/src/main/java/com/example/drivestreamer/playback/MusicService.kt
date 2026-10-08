@@ -1,7 +1,9 @@
 package com.example.drivestreamer.playback
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import androidx.core.app.TaskStackBuilder
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -18,6 +20,8 @@ import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.Album
 import com.example.drivestreamer.drive.AlbumArtLoader
 import com.example.drivestreamer.drive.LibraryCacheStore
+import com.example.drivestreamer.drive.Track
+import com.example.drivestreamer.ui.NowPlayingActivity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -93,7 +97,16 @@ class MusicService : MediaLibraryService() {
             }
         })
 
+        // Tapping the media notification (or the lock-screen player) opens
+        // Now Playing, with Library underneath it so Back goes somewhere
+        // sensible. The parent chain comes from NowPlayingActivity's
+        // parentActivityName in the manifest.
+        val openNowPlaying = TaskStackBuilder.create(this)
+            .addNextIntentWithParentStack(Intent(this, NowPlayingActivity::class.java))
+            .getPendingIntent(0, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
         mediaSession = MediaLibrarySession.Builder(this, player, LibraryCallback())
+            .apply { openNowPlaying?.let { setSessionActivity(it) } }
             .build()
 
         // Android Auto can start this service cold (after a reboot or the
@@ -132,6 +145,53 @@ class MusicService : MediaLibraryService() {
             MoreExecutors.directExecutor()
         )
         return future
+    }
+
+    /** The one place a [Track] becomes a playable, browsable MediaItem. */
+    private fun trackToMediaItem(track: Track): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(track.fileId)
+            .setUri("drive://file/${track.fileId}")
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.displayTitle)
+                    .setArtist(track.displayArtist.ifBlank { null })
+                    .setAlbumTitle(track.albumName)
+                    .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .build()
+            )
+            .build()
+
+    /**
+     * Turns an ID-only item (all Android Auto sends when you tap a song)
+     * into one ExoPlayer can play. Items that already have a URI, like
+     * the ones our own app sends, pass through untouched.
+     */
+    private fun resolveMediaItem(item: MediaItem): MediaItem {
+        if (item.localConfiguration != null) return item
+        for (album in MusicLibraryHolder.albums) {
+            album.tracks.firstOrNull { it.fileId == item.mediaId }
+                ?.let { return trackToMediaItem(it) }
+        }
+        throw UnsupportedOperationException("Unknown media id: ${item.mediaId}")
+    }
+
+    /**
+     * The queue to play when asked for a single id: the whole album that
+     * contains the track, starting at that track (so Next/Previous work
+     * in Auto). Also accepts an album id, starting from its first track.
+     */
+    private fun queueFor(mediaId: String): Pair<List<MediaItem>, Int>? {
+        val albums = MusicLibraryHolder.albums
+        for (album in albums) {
+            val index = album.tracks.indexOfFirst { it.fileId == mediaId }
+            if (index >= 0) return album.tracks.map { trackToMediaItem(it) } to index
+        }
+        albums.firstOrNull { it.folderId == mediaId && it.tracks.isNotEmpty() }
+            ?.let { return it.tracks.map { t -> trackToMediaItem(t) } to 0 }
+        return null
     }
 
     private fun buildCachingDataSourceFactory(): DataSource.Factory {
@@ -227,25 +287,73 @@ class MusicService : MediaLibraryService() {
                     albums.map { album -> albumToMediaItem(album) }
                 } else {
                     val album = albums.find { it.folderId == parentId }
-                    album?.tracks?.map { track ->
-                        MediaItem.Builder()
-                            .setMediaId(track.fileId)
-                            .setUri("drive://file/${track.fileId}")
-                            .setMediaMetadata(
-                                MediaMetadata.Builder()
-                                    .setTitle(track.displayTitle)
-                                    .setArtist(track.displayArtist.ifBlank { null })
-                                    .setAlbumTitle(track.albumName)
-                                    .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
-                                    .setIsBrowsable(false)
-                                    .setIsPlayable(true)
-                                    .build()
-                            )
-                            .build()
-                    } ?: emptyList()
+                    album?.tracks?.map { trackToMediaItem(it) } ?: emptyList()
                 }
                 LibraryResult.ofItemList(
                     com.google.common.collect.ImmutableList.copyOf(items), params
+                )
+            }
+        }
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String
+        ): ListenableFuture<LibraryResult<MediaItem>> = futureOf {
+            MusicLibraryHolder.ensureLoaded(applicationContext)
+            val albums = MusicLibraryHolder.albums
+            val item: MediaItem? = when {
+                mediaId == "root" -> MediaItem.Builder()
+                    .setMediaId("root")
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle("Drive Music")
+                            .setIsBrowsable(true)
+                            .setIsPlayable(false)
+                            .build()
+                    )
+                    .build()
+                else -> albums.firstOrNull { it.folderId == mediaId }?.let { albumToMediaItem(it) }
+                    ?: albums.asSequence()
+                        .flatMap { it.tracks.asSequence() }
+                        .firstOrNull { it.fileId == mediaId }
+                        ?.let { trackToMediaItem(it) }
+            }
+            if (item != null) LibraryResult.ofItem(item, null)
+            else LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+        }
+
+        // Android Auto asks to play a song by sending only its id, with no
+        // URI. Media3's default refuses such items, which is what shows up
+        // as "can't load your selection". Fill in the playable details
+        // from the library instead.
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>
+        ): ListenableFuture<MutableList<MediaItem>> = futureOf {
+            MusicLibraryHolder.ensureLoaded(applicationContext)
+            mediaItems.map { resolveMediaItem(it) }.toMutableList()
+        }
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = futureOf {
+            MusicLibraryHolder.ensureLoaded(applicationContext)
+            val single = mediaItems.singleOrNull()
+            val queue = if (single != null && single.localConfiguration == null) {
+                queueFor(single.mediaId)
+            } else null
+
+            if (queue != null) {
+                MediaSession.MediaItemsWithStartPosition(queue.first, queue.second, C.TIME_UNSET)
+            } else {
+                MediaSession.MediaItemsWithStartPosition(
+                    mediaItems.map { resolveMediaItem(it) }, startIndex, startPositionMs
                 )
             }
         }

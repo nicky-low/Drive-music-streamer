@@ -23,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.SignOutCleanup
@@ -65,6 +66,17 @@ class LibraryActivity : AppCompatActivity() {
     private lateinit var accountText: TextView
     private lateinit var cacheInfoText: TextView
     private lateinit var cacheStore: LibraryCacheStore
+
+    private lateinit var miniPlayer: LinearLayout
+    private lateinit var miniTitle: TextView
+    private lateinit var miniArtist: TextView
+    private lateinit var miniPlayPause: Button
+
+    private val miniPlayerListener = object : Player.Listener {
+        override fun onEvents(player: Player, events: Player.Events) {
+            updateMiniPlayer(player)
+        }
+    }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -119,7 +131,23 @@ class LibraryActivity : AppCompatActivity() {
             }
         }
 
-        PlaybackClient.connect(this) { /* ready */ }
+        miniPlayer = findViewById(R.id.miniPlayer)
+        miniTitle = findViewById(R.id.miniTitle)
+        miniArtist = findViewById(R.id.miniArtist)
+        miniPlayPause = findViewById(R.id.miniPlayPause)
+        miniPlayer.setOnClickListener {
+            startActivity(Intent(this, NowPlayingActivity::class.java))
+        }
+        miniPlayPause.setOnClickListener {
+            PlaybackClient.current()?.let { c -> if (c.isPlaying) c.pause() else c.play() }
+        }
+
+        // Also reflects playback that was already going when this screen
+        // opened (e.g. reopening the app after swiping it away).
+        PlaybackClient.connect(this) { controller ->
+            controller.addListener(miniPlayerListener)
+            updateMiniPlayer(controller)
+        }
 
         // Show whatever was cached from last time immediately — no
         // network call, no waiting on tag reads. A fresh "Load library"
@@ -264,6 +292,29 @@ class LibraryActivity : AppCompatActivity() {
             val flatIndex = albums.take(albumIndex).sumOf { it.tracks.size } + position
             playTrackAt(flatIndex)
         }
+    }
+
+    // --- Mini-player ---------------------------------------------------
+
+    private fun updateMiniPlayer(player: Player) {
+        if (player.currentMediaItem == null) {
+            miniPlayer.visibility = View.GONE
+            return
+        }
+        miniPlayer.visibility = View.VISIBLE
+        val metadata = player.mediaMetadata
+        miniTitle.text = metadata.title ?: "Unknown title"
+        val artist = metadata.artist?.toString().orEmpty()
+        miniArtist.text = artist
+        miniArtist.visibility = if (artist.isBlank()) View.GONE else View.VISIBLE
+        val showPause = player.isPlaying ||
+            (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)
+        miniPlayPause.text = if (showPause) "⏸" else "▶"
+    }
+
+    override fun onDestroy() {
+        PlaybackClient.current()?.removeListener(miniPlayerListener)
+        super.onDestroy()
     }
 
     // --- Playback ------------------------------------------------------
