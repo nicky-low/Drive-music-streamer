@@ -1,6 +1,7 @@
 package com.example.drivestreamer.playback
 
 import android.content.Context
+import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -61,6 +62,10 @@ class MusicService : MediaLibraryService() {
         }
 
         player = ExoPlayer.Builder(this)
+            // We stream over the network, so keep the CPU and Wi-Fi awake
+            // while playing with the screen off (needs WAKE_LOCK). Only held
+            // during playback — released on pause/stop.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .setMediaSourceFactory(
                 androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
                     buildCachingDataSourceFactory()
@@ -159,6 +164,23 @@ class MusicService : MediaLibraryService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
         mediaSession
+
+    /**
+     * The app's task was swiped away from recents.
+     *
+     * Playing: Media3's default keeps the service running, so music carries
+     * on. Paused: the default tries to stop the service, but our own
+     * in-app controller (PlaybackClient) is still bound to it, which blocks
+     * the stop and leaves a paused service + notification lingering. So
+     * when nothing is playing, drop that controller first. Android Auto, if
+     * connected, stays bound on its own and keeps the service alive.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!isPlaybackOngoing) {
+            PlaybackClient.releaseAll()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onDestroy() {
         MusicLibraryHolder.removeListener(libraryChangedListener)
