@@ -15,6 +15,7 @@ object PlaybackClient {
 
     private var controller: MediaController? = null
     private val listeners = mutableListOf<(MediaController) -> Unit>()
+    private var connecting = false
 
     fun connect(context: Context, onReady: (MediaController) -> Unit) {
         controller?.let {
@@ -22,11 +23,22 @@ object PlaybackClient {
             return
         }
         listeners.add(onReady)
+        // A connection is already being built; it will call us when ready.
+        // (Without this, two quick connect() calls built two controllers
+        // and leaked the first.)
+        if (connecting) return
+        connecting = true
 
         val sessionToken = SessionToken(context, ComponentName(context, MusicService::class.java))
         val future = MediaController.Builder(context.applicationContext, sessionToken).buildAsync()
         future.addListener({
-            val c = future.get()
+            connecting = false
+            val c = try {
+                future.get()
+            } catch (e: Exception) {
+                listeners.clear() // let a later connect() try again
+                return@addListener
+            }
             controller = c
             listeners.forEach { it(c) }
             listeners.clear()
