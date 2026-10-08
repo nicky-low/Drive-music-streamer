@@ -108,4 +108,50 @@
         android:layout_weight="1"
         android:layout_marginTop="4dp" />
 
+    <!-- Shown whenever something is queued, so you can always get back to
+         Now Playing from here. -->
+    <LinearLayout
+        android:id="@+id/miniPlayer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:padding="12dp"
+        android:gravity="center_vertical"
+        android:background="#26808080"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/miniTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/miniArtist"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:textSize="12sp"
+                android:alpha="0.7" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/miniPlayPause"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="▶" />
+    </LinearLayout>
+
 </LinearLayout>
