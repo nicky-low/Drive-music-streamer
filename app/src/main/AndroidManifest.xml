@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Lets ExoPlayer hold a CPU + Wi-Fi wake lock while streaming, so
+         playback doesn't stall with the screen off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Needed on Android 13+ for the library-loading progress
          notification to actually show; the service still runs and
          completes without it, it just won't have a visible notification. -->
