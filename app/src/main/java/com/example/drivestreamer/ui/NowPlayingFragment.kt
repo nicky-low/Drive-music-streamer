@@ -4,28 +4,35 @@ import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import android.widget.Toast
+import androidx.fragment.app.Fragment
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import com.example.drivestreamer.R
 import com.example.drivestreamer.playback.PlaybackClient
 
 /**
- * Shows the currently playing track with live progress, transport
+ * The Now Playing tab: current track with live progress, transport
  * controls, and shuffle/repeat toggles. Talks to the same MediaController
- * the library screen uses (via PlaybackClient), so state here reflects
+ * as the rest of the app (via PlaybackClient), so state here reflects
  * whatever's actually playing — including changes made from Android Auto.
+ *
+ * The tab stays alive while hidden, so the once-every-half-second
+ * progress ticker is only run while this tab is actually on screen.
  */
-class NowPlayingActivity : AppCompatActivity() {
+class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
 
     private var controller: MediaController? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var progressUpdater: Runnable? = null
+    private var viewAlive = false
 
     private lateinit var trackTitle: TextView
     private lateinit var albumTitle: TextView
@@ -39,24 +46,24 @@ class NowPlayingActivity : AppCompatActivity() {
 
     private var userIsSeeking = false
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_now_playing)
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        viewAlive = true
 
-        trackTitle = findViewById(R.id.trackTitle)
-        albumTitle = findViewById(R.id.albumTitle)
-        elapsedTime = findViewById(R.id.elapsedTime)
-        totalTime = findViewById(R.id.totalTime)
-        seekBar = findViewById(R.id.seekBar)
-        playPauseButton = findViewById(R.id.playPauseButton)
-        albumArt = findViewById(R.id.albumArt)
-        shuffleButton = findViewById(R.id.shuffleButton)
-        repeatButton = findViewById(R.id.repeatButton)
+        trackTitle = view.findViewById(R.id.trackTitle)
+        albumTitle = view.findViewById(R.id.albumTitle)
+        elapsedTime = view.findViewById(R.id.elapsedTime)
+        totalTime = view.findViewById(R.id.totalTime)
+        seekBar = view.findViewById(R.id.seekBar)
+        playPauseButton = view.findViewById(R.id.playPauseButton)
+        albumArt = view.findViewById(R.id.albumArt)
+        shuffleButton = view.findViewById(R.id.shuffleButton)
+        repeatButton = view.findViewById(R.id.repeatButton)
 
-        findViewById<Button>(R.id.previousButton).setOnClickListener {
+        view.findViewById<Button>(R.id.previousButton).setOnClickListener {
             controller?.seekToPrevious()
         }
-        findViewById<Button>(R.id.nextButton).setOnClickListener {
+        view.findViewById<Button>(R.id.nextButton).setOnClickListener {
             controller?.seekToNext()
         }
         playPauseButton.setOnClickListener {
@@ -80,13 +87,70 @@ class NowPlayingActivity : AppCompatActivity() {
             }
         })
 
-        PlaybackClient.connect(this) { c ->
+        PlaybackClient.connect(requireContext().applicationContext) { c ->
+            // The tab may have been torn down while the connection was
+            // being built (rotation, sign-out): don't touch its views.
+            if (!viewAlive) return@connect
             controller = c
             c.addListener(playerListener)
             updateFromController(c)
-            startProgressUpdates()
+            updateProgressTicker()
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        updateProgressTicker()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        updateProgressTicker()
+    }
+
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        updateProgressTicker()
+    }
+
+    override fun onDestroyView() {
+        viewAlive = false
+        stopProgressTicker()
+        controller?.removeListener(playerListener)
+        controller = null
+        super.onDestroyView()
+    }
+
+    // --- Progress ticker (only while this tab is visible) --------------
+
+    private fun updateProgressTicker() {
+        val shouldRun = viewAlive && isResumed && !isHidden && controller != null
+        if (shouldRun) startProgressTicker() else stopProgressTicker()
+    }
+
+    private fun startProgressTicker() {
+        if (progressUpdater != null) return
+        val updater = object : Runnable {
+            override fun run() {
+                controller?.let { c ->
+                    if (!userIsSeeking) {
+                        seekBar.progress = c.currentPosition.toInt()
+                        elapsedTime.text = formatMillis(c.currentPosition)
+                    }
+                }
+                mainHandler.postDelayed(this, 500)
+            }
+        }
+        progressUpdater = updater
+        mainHandler.post(updater)
+    }
+
+    private fun stopProgressTicker() {
+        progressUpdater?.let { mainHandler.removeCallbacks(it) }
+        progressUpdater = null
+    }
+
+    // --- Player state -> UI ------------------------------------------------
 
     /** OFF -> ALL -> ONE -> OFF */
     private fun nextRepeatMode(current: Int): Int = when (current) {
@@ -106,12 +170,10 @@ class NowPlayingActivity : AppCompatActivity() {
             playPauseButton.text = if (isPlaying) "⏸" else "▶"
         }
 
-        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-            android.widget.Toast.makeText(
-                this@NowPlayingActivity,
-                "Playback error: ${error.message}",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+        override fun onPlayerError(error: PlaybackException) {
+            context?.let {
+                Toast.makeText(it, "Playback error: ${error.message}", Toast.LENGTH_LONG).show()
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -166,31 +228,11 @@ class NowPlayingActivity : AppCompatActivity() {
         updateRepeatButton(c.repeatMode)
     }
 
-    private fun startProgressUpdates() {
-        progressUpdater = object : Runnable {
-            override fun run() {
-                controller?.let { c ->
-                    if (!userIsSeeking) {
-                        seekBar.progress = c.currentPosition.toInt()
-                        elapsedTime.text = formatMillis(c.currentPosition)
-                    }
-                }
-                mainHandler.postDelayed(this, 500)
-            }
-        }
-        mainHandler.post(progressUpdater!!)
-    }
-
     private fun formatMillis(ms: Long): String {
-        val totalSeconds = ms / 1000
+        // A live duration of "unknown" is a huge negative number; show 0:00.
+        val totalSeconds = ms.coerceAtLeast(0) / 1000
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return "%d:%02d".format(minutes, seconds)
-    }
-
-    override fun onDestroy() {
-        progressUpdater?.let { mainHandler.removeCallbacks(it) }
-        controller?.removeListener(playerListener)
-        super.onDestroy()
     }
 }

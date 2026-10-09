@@ -3,7 +3,7 @@ package com.example.drivestreamer.playback
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import androidx.core.app.TaskStackBuilder
+import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -12,17 +12,21 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.Album
 import com.example.drivestreamer.drive.AlbumArtLoader
 import com.example.drivestreamer.drive.LibraryCacheStore
 import com.example.drivestreamer.drive.Track
-import com.example.drivestreamer.ui.NowPlayingActivity
+import com.example.drivestreamer.ui.MainActivity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -35,6 +39,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+// Shuffle and repeat buttons shown by Android Auto (and in the phone's media
+// notification). They're "custom commands": Auto sends the action name back
+// to us when tapped, and onCustomCommand below changes the player.
+private const val ACTION_TOGGLE_SHUFFLE = "com.example.drivestreamer.TOGGLE_SHUFFLE"
+private const val ACTION_CYCLE_REPEAT = "com.example.drivestreamer.CYCLE_REPEAT"
+private val SHUFFLE_COMMAND = SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY)
+private val REPEAT_COMMAND = SessionCommand(ACTION_CYCLE_REPEAT, Bundle.EMPTY)
 
 /**
  * This service is the bridge to Android Auto. Once it's registered
@@ -98,19 +110,37 @@ class MusicService : MediaLibraryService() {
         })
 
         // Tapping the media notification (or the lock-screen player) opens
-        // Now Playing, with Library underneath it so Back goes somewhere
-        // sensible. The parent chain comes from NowPlayingActivity's
-        // parentActivityName in the manifest.
-        val openNowPlaying = TaskStackBuilder.create(this)
-            .addNextIntentWithParentStack(Intent(this, NowPlayingActivity::class.java))
-            .getPendingIntent(0, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        // the app on its Now Playing tab. The request code (100) keeps this
+        // PendingIntent distinct from the library-load notification's, which
+        // targets the same activity: PendingIntents that differ only in
+        // their extras would otherwise be treated as one and overwrite
+        // each other.
+        val openNowPlaying = PendingIntent.getActivity(
+            this, 100,
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_OPEN_TAB, MainActivity.TAB_NOW_PLAYING)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         mediaSession = MediaLibrarySession.Builder(this, player, LibraryCallback())
-            .apply { openNowPlaying?.let { setSessionActivity(it) } }
+            .setSessionActivity(openNowPlaying)
             .build()
 
+        // Shuffle/repeat can also be changed from the phone's Now Playing
+        // tab; refresh the buttons so Auto always shows the real state.
+        player.addListener(object : Player.Listener {
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                refreshCustomLayout()
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                refreshCustomLayout()
+            }
+        })
+
         // Android Auto can start this service cold (after a reboot or the
-        // process being killed) without LibraryActivity ever running, in
+        // process being killed) without the app's UI ever running, in
         // which case MusicLibraryHolder is empty. Warm it from the on-disk
         // cache right away so the first browse request is usually instant.
         // onGetChildren also awaits this (see below), so a browse request
@@ -145,6 +175,33 @@ class MusicService : MediaLibraryService() {
             MoreExecutors.directExecutor()
         )
         return future
+    }
+
+    /** The shuffle and repeat buttons, with icons reflecting the current state. */
+    private fun buildCustomLayout(): ImmutableList<CommandButton> {
+        val shuffleOn = player.shuffleModeEnabled
+        val shuffleButton = CommandButton.Builder(
+            if (shuffleOn) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF
+        )
+            .setSessionCommand(SHUFFLE_COMMAND)
+            .setDisplayName(if (shuffleOn) "Shuffle: on" else "Shuffle: off")
+            .build()
+
+        val (repeatIcon, repeatLabel) = when (player.repeatMode) {
+            Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL to "Repeat: all"
+            Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE to "Repeat: one"
+            else -> CommandButton.ICON_REPEAT_OFF to "Repeat: off"
+        }
+        val repeatButton = CommandButton.Builder(repeatIcon)
+            .setSessionCommand(REPEAT_COMMAND)
+            .setDisplayName(repeatLabel)
+            .build()
+
+        return ImmutableList.of(shuffleButton, repeatButton)
+    }
+
+    private fun refreshCustomLayout() {
+        mediaSession.setCustomLayout(buildCustomLayout())
     }
 
     /** The one place a [Track] becomes a playable, browsable MediaItem. */
@@ -251,6 +308,45 @@ class MusicService : MediaLibraryService() {
     }
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {
+
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            // Allow our two custom commands on top of the normal ones, and
+            // hand the controller (Android Auto included) the buttons.
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                .buildUpon()
+                .add(SHUFFLE_COMMAND)
+                .add(REPEAT_COMMAND)
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(commands)
+                .setCustomLayout(buildCustomLayout())
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle
+        ): ListenableFuture<SessionResult> {
+            when (customCommand.customAction) {
+                ACTION_TOGGLE_SHUFFLE -> player.shuffleModeEnabled = !player.shuffleModeEnabled
+                // Same cycle as the phone's repeat button: off -> all -> one -> off.
+                ACTION_CYCLE_REPEAT -> player.repeatMode = when (player.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                    else -> Player.REPEAT_MODE_OFF
+                }
+                else -> return Futures.immediateFuture(
+                    SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
+                )
+            }
+            // The player listener refreshes the buttons once the change lands.
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
 
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,

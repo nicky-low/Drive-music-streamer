@@ -33,15 +33,13 @@
             </intent-filter>
         </activity>
 
+        <!-- The three-tab main screen (Library / Now Playing / Settings).
+             singleTop so tapping a notification while the app is open
+             switches tab in place instead of stacking a second copy. -->
         <activity
-            android:name=".ui.LibraryActivity"
+            android:name=".ui.MainActivity"
             android:exported="false"
             android:launchMode="singleTop" />
-
-        <activity
-            android:name=".ui.NowPlayingActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.LibraryActivity" />
 
         <!-- The MediaBrowserService is what Android Auto actually binds to. -->
         <service
@@ -55,7 +53,7 @@
         </service>
 
         <!-- Runs the (potentially long) library load independently of
-             LibraryActivity's lifecycle — see LibraryLoadService for why. -->
+             the UI's lifecycle — see LibraryLoadService for why. -->
         <service
             android:name=".playback.LibraryLoadService"
             android:exported="false"
