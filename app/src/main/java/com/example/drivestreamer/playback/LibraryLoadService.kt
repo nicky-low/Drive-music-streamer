@@ -14,7 +14,7 @@ import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.DriveLibraryRepository
 import com.example.drivestreamer.drive.LibraryCacheStore
-import com.example.drivestreamer.ui.LibraryActivity
+import com.example.drivestreamer.ui.MainActivity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -128,8 +128,9 @@ class LibraryLoadService : Service() {
     }
 
     private fun buildNotification(status: String, done: Int, total: Int): Notification {
-        val contentIntent = Intent(this, LibraryActivity::class.java).apply {
+        val contentIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(MainActivity.EXTRA_OPEN_TAB, MainActivity.TAB_SETTINGS)
         }
         val contentPendingIntent = PendingIntent.getActivity(
             this, 0, contentIntent,
