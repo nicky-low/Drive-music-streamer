@@ -1,15 +1,19 @@
 package com.example.drivestreamer.ui
 
+import android.animation.ValueAnimator
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.widget.Button
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.graphics.ColorUtils
 import androidx.fragment.app.Fragment
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -24,6 +28,9 @@ import com.example.drivestreamer.playback.PlaybackClient
  * as the rest of the app (via PlaybackClient), so state here reflects
  * whatever's actually playing — including changes made from Android Auto.
  *
+ * The background is a gradient taken from the current album art (see
+ * ArtColors) that cross-fades when the track changes.
+ *
  * The tab stays alive while hidden, so the once-every-half-second
  * progress ticker is only run while this tab is actually on screen.
  */
@@ -35,14 +42,26 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
     private var viewAlive = false
 
     private lateinit var trackTitle: TextView
+    private lateinit var trackArtist: TextView
     private lateinit var albumTitle: TextView
     private lateinit var elapsedTime: TextView
     private lateinit var totalTime: TextView
     private lateinit var seekBar: SeekBar
-    private lateinit var playPauseButton: Button
+    private lateinit var playPauseButton: ImageButton
     private lateinit var albumArt: ImageView
-    private lateinit var shuffleButton: Button
-    private lateinit var repeatButton: Button
+    private lateinit var albumArtPlaceholder: ImageView
+    private lateinit var shuffleButton: ImageButton
+    private lateinit var repeatButton: ImageButton
+
+    // Background gradient. currentColors is kept on the fragment so a
+    // re-created view starts from where the old one was.
+    private var currentColors = ArtColors.DEFAULT_GRADIENT.copyOf()
+    private lateinit var backgroundGradient: GradientDrawable
+    private var colorAnimator: ValueAnimator? = null
+
+    // The artwork bytes we last drew, so repeated metadata events for the
+    // same track don't re-decode the image.
+    private var lastArtBytes: ByteArray? = null
 
     private var userIsSeeking = false
 
@@ -51,19 +70,24 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
         viewAlive = true
 
         trackTitle = view.findViewById(R.id.trackTitle)
+        trackArtist = view.findViewById(R.id.trackArtist)
         albumTitle = view.findViewById(R.id.albumTitle)
         elapsedTime = view.findViewById(R.id.elapsedTime)
         totalTime = view.findViewById(R.id.totalTime)
         seekBar = view.findViewById(R.id.seekBar)
         playPauseButton = view.findViewById(R.id.playPauseButton)
         albumArt = view.findViewById(R.id.albumArt)
+        albumArtPlaceholder = view.findViewById(R.id.albumArtPlaceholder)
         shuffleButton = view.findViewById(R.id.shuffleButton)
         repeatButton = view.findViewById(R.id.repeatButton)
 
-        view.findViewById<Button>(R.id.previousButton).setOnClickListener {
+        backgroundGradient = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, currentColors)
+        view.findViewById<View>(R.id.nowPlayingRoot).background = backgroundGradient
+
+        view.findViewById<ImageButton>(R.id.previousButton).setOnClickListener {
             controller?.seekToPrevious()
         }
-        view.findViewById<Button>(R.id.nextButton).setOnClickListener {
+        view.findViewById<ImageButton>(R.id.nextButton).setOnClickListener {
             controller?.seekToNext()
         }
         playPauseButton.setOnClickListener {
@@ -116,6 +140,9 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
     override fun onDestroyView() {
         viewAlive = false
         stopProgressTicker()
+        colorAnimator?.cancel()
+        colorAnimator = null
+        lastArtBytes = null
         controller?.removeListener(playerListener)
         controller = null
         super.onDestroyView()
@@ -161,13 +188,11 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
 
     private val playerListener = object : Player.Listener {
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-            trackTitle.text = mediaMetadata.title ?: "Unknown title"
-            albumTitle.text = mediaMetadata.albumTitle ?: ""
-            applyArt(mediaMetadata)
+            applyMetadata(mediaMetadata, fallbackTitle = "Unknown title")
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            playPauseButton.text = if (isPlaying) "⏸" else "▶"
+            updatePlayPauseIcon(isPlaying)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -182,7 +207,7 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
         }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-            shuffleButton.alpha = if (shuffleModeEnabled) 1f else 0.5f
+            updateShuffleButton(shuffleModeEnabled)
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
@@ -190,41 +215,93 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
         }
     }
 
+    private fun updatePlayPauseIcon(isPlaying: Boolean) {
+        playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_np_pause else R.drawable.ic_np_play)
+    }
+
+    private fun updateShuffleButton(enabled: Boolean) {
+        shuffleButton.alpha = if (enabled) 1f else 0.4f
+    }
+
     private fun updateRepeatButton(repeatMode: Int) {
-        when (repeatMode) {
-            Player.REPEAT_MODE_OFF -> {
-                repeatButton.text = "🔁"
-                repeatButton.alpha = 0.5f
-            }
-            Player.REPEAT_MODE_ALL -> {
-                repeatButton.text = "🔁"
-                repeatButton.alpha = 1f
-            }
-            Player.REPEAT_MODE_ONE -> {
-                repeatButton.text = "🔂"
-                repeatButton.alpha = 1f
-            }
-        }
+        repeatButton.setImageResource(
+            if (repeatMode == Player.REPEAT_MODE_ONE) R.drawable.ic_np_repeat_one else R.drawable.ic_np_repeat
+        )
+        repeatButton.alpha = if (repeatMode == Player.REPEAT_MODE_OFF) 0.4f else 1f
+    }
+
+    private fun applyMetadata(mediaMetadata: MediaMetadata, fallbackTitle: String) {
+        trackTitle.text = mediaMetadata.title ?: fallbackTitle
+        val artist = mediaMetadata.artist?.toString().orEmpty()
+        trackArtist.text = artist
+        trackArtist.visibility = if (artist.isBlank()) View.GONE else View.VISIBLE
+        albumTitle.text = mediaMetadata.albumTitle ?: ""
+        applyArt(mediaMetadata)
     }
 
     private fun applyArt(mediaMetadata: MediaMetadata) {
         val artBytes = mediaMetadata.artworkData
-        if (artBytes != null) {
-            val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
-            albumArt.setImageBitmap(bitmap)
-        } else {
+        // Same picture we already drew (the controller hands back a fresh
+        // copy of the bytes each time, so compare contents, not identity).
+        val previous = lastArtBytes
+        if (artBytes === previous ||
+            (artBytes != null && previous != null && artBytes.contentEquals(previous))
+        ) return
+        lastArtBytes = artBytes
+
+        val bitmap = artBytes?.let { decodeScaled(it, 800) }
+        if (bitmap == null) {
             albumArt.setImageDrawable(null)
+            albumArtPlaceholder.visibility = View.VISIBLE
+            animateBackgroundTo(ArtColors.DEFAULT_GRADIENT)
+            return
+        }
+
+        // Fade the new cover in rather than snapping to it.
+        albumArtPlaceholder.visibility = View.GONE
+        albumArt.alpha = 0f
+        albumArt.setImageBitmap(bitmap)
+        albumArt.animate().alpha(1f).setDuration(250).start()
+
+        animateBackgroundTo(ArtColors.gradientFor(bitmap))
+    }
+
+    /** Decodes at no more than about [maxSide] pixels, to keep memory sane. */
+    private fun decodeScaled(bytes: ByteArray, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= maxSide && bounds.outHeight / (sample * 2) >= maxSide) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    }
+
+    /** Cross-fades the background gradient from where it is now to [target]. */
+    private fun animateBackgroundTo(target: IntArray) {
+        colorAnimator?.cancel()
+        val from = currentColors.copyOf()
+        colorAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 500
+            addUpdateListener { animator ->
+                val fraction = animator.animatedFraction
+                val mixed = IntArray(from.size) { i ->
+                    ColorUtils.blendARGB(from[i], target[i], fraction)
+                }
+                currentColors = mixed
+                backgroundGradient.colors = mixed
+            }
+            start()
         }
     }
 
     private fun updateFromController(c: MediaController) {
-        trackTitle.text = c.mediaMetadata.title ?: "Nothing playing"
-        albumTitle.text = c.mediaMetadata.albumTitle ?: ""
-        playPauseButton.text = if (c.isPlaying) "⏸" else "▶"
+        applyMetadata(c.mediaMetadata, fallbackTitle = "Nothing playing")
+        updatePlayPauseIcon(c.isPlaying)
         seekBar.max = c.duration.coerceAtLeast(0).toInt()
         totalTime.text = formatMillis(c.duration)
-        applyArt(c.mediaMetadata)
-        shuffleButton.alpha = if (c.shuffleModeEnabled) 1f else 0.5f
+        updateShuffleButton(c.shuffleModeEnabled)
         updateRepeatButton(c.repeatMode)
     }
 
