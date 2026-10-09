@@ -1,120 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Host for the three tabs. The tabs themselves are fragments added by
+     MainActivity; the mini-player and the bottom bar are shared chrome. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
+    android:orientation="vertical">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical">
-
-        <TextView
-            android:id="@+id/accountText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textSize="12sp"
-            android:alpha="0.7"
-            android:text="" />
-
-        <Button
-            android:id="@+id/signOutButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Sign out" />
-    </LinearLayout>
-
-    <EditText
-        android:id="@+id/folderIdInput"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:hint="Paste your music folder's Drive ID" />
-
-    <TextView
-        android:id="@+id/cacheInfoText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:textSize="12sp"
-        android:alpha="0.7"
-        android:text="" />
-
-    <Button
-        android:id="@+id/loadLibraryButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Load library" />
-
-    <LinearLayout
-        android:id="@+id/loadingRow"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center_vertical"
-        android:visibility="gone">
-
-        <ProgressBar
-            android:id="@+id/loadingSpinner"
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            style="?android:attr/progressBarStyleSmall" />
-
-        <TextView
-            android:id="@+id/loadingStatusText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="12dp"
-            android:text="Loading library…" />
-
-        <Button
-            android:id="@+id/cancelLoadButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Cancel" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:gravity="center_vertical">
-
-        <Button
-            android:id="@+id/backButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="← Back"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/listTitleText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:textStyle="bold"
-            android:textSize="16sp"
-            android:text="Albums" />
-    </LinearLayout>
-
-    <ListView
-        android:id="@+id/trackListView"
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/fragmentContainer"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="4dp" />
+        android:layout_weight="1" />
 
-    <!-- Shown whenever something is queued, so you can always get back to
-         Now Playing from here. -->
+    <!-- Shown on the Library and Settings tabs whenever something is
+         queued, so you can see what's playing and jump to the player. -->
     <LinearLayout
         android:id="@+id/miniPlayer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
         android:padding="12dp"
         android:gravity="center_vertical"
         android:background="#26808080"
@@ -153,5 +57,12 @@
             android:layout_marginStart="8dp"
             android:text="▶" />
     </LinearLayout>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
 
 </LinearLayout>
