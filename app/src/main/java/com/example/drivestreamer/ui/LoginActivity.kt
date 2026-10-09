@@ -50,7 +50,7 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun goToLibrary() {
-        startActivity(Intent(this, LibraryActivity::class.java))
+        startActivity(Intent(this, MainActivity::class.java))
         finish()
     }
 }
