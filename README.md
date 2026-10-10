@@ -1,226 +1,261 @@
-# Drive Streamer — scaffold
+# Drive Streamer
 
-A minimal Android app that streams music from a Google Drive folder,
-using only the `drive.readonly` scope, with native Android Auto support
-via `MediaLibraryService`. No subscription — it's your own app.
+An Android app that streams music from a Google Drive folder, with full
+Android Auto support. No subscription, no third-party app with access to
+your Drive — it's your own app, and it can only ever see one shared folder.
 
-## What's already wired up
+Kotlin · Media3 / ExoPlayer · `MediaLibraryService` for Android Auto ·
+min SDK 26, target SDK 34.
 
-- **Auth** (`auth/AuthManager.kt`): Google Sign-In requesting only
-  `drive.readonly` — read-only, and only as broad as whatever Drive
-  content the signed-in account can see. Sign in with your **buffer
-  account** (the second Google account that only has your shared music
-  folder shared into it), not your main account.
-- **Library loading** (`drive/DriveLibraryRepository.kt`): walks your
-  music folder one level deep (subfolders = albums), then each album
-  folder for audio files.
-- **Streaming** (`playback/GoogleDriveDataSource.kt`): a custom ExoPlayer
-  `DataSource` that streams bytes directly from
-  `files.get?alt=media`, using HTTP Range headers so seeking doesn't
-  require re-downloading from the start.
-- **Android Auto** (`playback/MusicService.kt`): a `MediaLibraryService`
-  — the same official API Google's own reference music app uses. This
-  is what makes the app show up properly in Android Auto's UI, not a
-  hack layered on top.
-- **Token refresh** (`auth/TokenProvider.kt`): caches the access token
-  and proactively refreshes it after 45 minutes (Drive tokens are
-  typically valid ~1 hour), so long listening sessions don't hit a
-  dead token mid-track. If a request still comes back `401` (edge
-  case — token revoked, clock skew, etc.), `GoogleDriveDataSource`
-  invalidates it and retries once with a forced-fresh token before
-  giving up. `MusicService` owns its *own* `TokenProvider` and
-  re-establishes the signed-in account on `onCreate()` — this matters
-  because Android Auto can start the service directly (e.g. after a
-  reboot) without `MainActivity` having run first, and Play Services
-  persists sign-in state on-device so this works without user
-  interaction.
-- **Album art** (`drive/AlbumArtLoader.kt`): pulls embedded cover art
-  (ID3 APIC frames, FLAC PICTURE blocks, etc.) directly out of each
-  audio file via `MediaMetadataRetriever`, which supports HTTP(S)
-  sources with custom headers — so it points straight at the
-  authenticated Drive stream, no separate download step. `MusicService`
-  fetches it in the background right after a track starts playing (so
-  playback isn't blocked waiting on it) and attaches it to that
-  track's session metadata, which is what feeds the lock screen,
-  notification, Android Auto's now-playing display, and our own
-  now-playing screen — all from one place, not four separate fetches.
-  Results are cached in memory per file ID so replaying a track is
-  instant.
-- **Album art in the Android Auto browse list**
-  (`playback/AlbumArtContentProvider.kt`): rather than fetching art for
-  every track before the browse list can even render, each `MediaItem`
-  carries an `artworkUri` pointing at a small `ContentProvider`. Auto
-  (or our own app) resolves that URI — and so triggers the actual
-  fetch — only when it's about to draw that row, so cost scales with
-  what's on screen rather than your whole library. It shares the same
-  `AlbumArtLoader` cache as playback, so art fetched for a browse row
-  is already warm if you then play that track, and vice versa.
-  **Trade-off worth knowing**: the provider is `android:exported="true"`,
-  which means any app on the device can technically request art through
-  it (just image bytes, keyed by a Drive file ID — no auth tokens or
-  account info are exposed). That's normal for media-art providers, but
-  if it bothers you, restrict it with a signature-level permission.
-  `playback/PlaybackClient.kt`): shows the current track/album, a
-  live seek bar, and play/pause/skip. `PlaybackClient` is a small
-  singleton holding one shared `MediaController` so switching between
-  the library screen and now-playing doesn't tear down and rebuild
-  the connection to `MusicService` — which matters because doing that
-  naively can cause a playback blip each time you navigate.
-- **Offline caching** (`playback/PlaybackCache.kt`): wraps the Drive
-  data source in ExoPlayer's `CacheDataSource`, backed by a disk cache
-  capped at 1.5GB (`LeastRecentlyUsedCacheEvictor` — oldest-played
-  bytes get evicted first once you hit the cap, no manual cleanup
-  needed). Bytes fetched from Drive are written to disk as they
-  stream past, so replaying a track — or reaching a point you've
-  already buffered past once — is instant and needs no network. It
-  lives in `context.cacheDir`, which Android is allowed to clear
-  under storage pressure — that's intentional: this is a *cache* of
-  recently played material, not a permanent offline download of your
-  library, which is the behavior that fits your storage constraint.
-- **UI** (`ui/MainActivity.kt`): bare-bones — sign in, paste your music
-  folder's Drive ID, load, tap a track to open the now-playing screen
-  and start it. Still no album browsing UI (just a flat track list);
-  worth replacing with a `RecyclerView` once you're happy with the
-  plumbing.
+## What it does
 
-## Setup steps
+- **Streams straight from Drive.** Audio is read with HTTP Range requests,
+  so seeking works and nothing needs to be downloaded or synced first.
+- **Three tabs.** *Library* (browse and search), *Now Playing*, and
+  *Settings*. A mini-player strip stays above the tab bar on Library and
+  Settings whenever something is queued.
+- **Library browsing and search.** Folders and songs, with the playing
+  track highlighted. The search icon looks across every folder name and
+  every song at once (accent- and case-insensitive: "beyonce" finds
+  *Beyoncé*), and Back from a folder returns to the same results.
+- **Now Playing.** Large artwork, a live seek bar, shuffle and repeat, and a
+  background gradient built from the current album art.
+- **Android Auto.** Browse folders and songs from the car's screen, play
+  them, and use the shuffle and repeat buttons.
+- **Survives the app being closed.** Music keeps playing after you swipe the
+  app from recents; the library scan keeps going in the background too.
+- **Fast restarts.** The parsed library is cached on the device, so opening
+  the app doesn't mean re-scanning Drive.
+
+## How access is kept narrow
+
+This is the reason the app exists rather than using a general music player
+with Drive support.
+
+- Your real music lives in your **main** Google account.
+- That folder is shared (view-only) into a second, otherwise empty **buffer**
+  account.
+- The app signs into the **buffer** account, requesting only the
+  `drive.readonly` scope.
+
+So even if something went wrong, the app could only ever read what's shared
+into the buffer account — never your real Drive. Signing in with your main
+account would defeat this, so don't.
+
+## Using the app
+
+1. **Sign in** with the buffer account on the first screen.
+2. Open **Settings**, paste your music folder's Drive **link** (or just its
+   ID) and tap **Load library**. A progress notification shows while it
+   scans, and you can cancel it. With a large collection (thousands of songs)
+   the first scan takes a while; it keeps running if you leave the app.
+3. Go to **Library** to browse or search, and tap a song to play it. You land
+   on **Now Playing**.
+4. Later launches show the cached library straight away. Tap **Load
+   library** again only when you've added or changed music in Drive.
+
+**Signing out** (Settings) also clears everything the account left on the
+device: the cached library, cover art, and cached audio. Signing back in
+means pasting the folder link and loading the library again.
+
+### Where the song info comes from
+
+Titles and artists come from each file's embedded tags (ID3 and similar),
+read straight from the authenticated Drive stream. Files with no usable tags
+fall back to parsing the filename (`01 - Artist - Title.mp3` and similar).
+
+### Queues
+
+- Tapping a song in the **app** queues your whole library in folder order,
+  starting at that song, so playback carries on into the next folder.
+- Tapping a song in **Android Auto** queues just that song's folder, starting
+  at that song, so Next and Previous stay within the album.
+
+## Android Auto
+
+- Browsing and playback use the standard Media3 `MediaLibraryService`, the
+  same API Google's own reference music app uses.
+- Shuffle and repeat appear as buttons on the Now Playing screen and stay in
+  sync with the phone, whichever side you change them on.
+- If Android Auto starts the app by itself (after a reboot, say), the library
+  is loaded from the on-disk cache, so browsing works without opening the app.
+- When a new scan finishes, connected browsers are told to refresh.
+- Cover art in the browse list loads lazily, only for rows being drawn.
+
+**Testing a sideloaded debug build:** Android Auto hides apps that didn't come
+from the Play Store. In Android Auto's developer settings on your phone,
+enable **Unknown sources**. To test without a car, use the
+[Android Auto Desktop Head Unit](https://developer.android.com/training/cars/testing)
+(this needs `adb` on a computer).
+
+## Setup
 
 ### 1. Google Cloud Console
-1. Go to console.cloud.google.com, create a new project (or reuse one).
-2. **Enable the Google Drive API** (APIs & Services → Library → search
-   "Google Drive API" → Enable).
-3. **Configure the OAuth consent screen** (APIs & Services → OAuth
-   consent screen). Choose **External**, fill in the basic app info.
-   Since this is just for personal use, it's fine to leave it in
-   "Testing" mode and add your buffer account's email as a test user —
-   you don't need to submit for verification.
-4. **Create an OAuth client ID** (APIs & Services → Credentials →
-   Create Credentials → OAuth client ID → Android):
-   - Package name: `com.example.drivestreamer` (or whatever you rename
-     it to)
-   - SHA-1 fingerprint: get this by running
-     `./gradlew signingReport` in Android Studio's terminal once the
-     project's open, and copy the debug SHA-1.
 
-### 2. Open in Android Studio
-1. Open this folder as an existing project.
-2. Let Gradle sync — it'll pull in the dependencies listed in
-   `app/build.gradle.kts`.
-3. Update `applicationId` in `app/build.gradle.kts` and the
-   `namespace`/package if you want something other than
-   `com.example.drivestreamer` — just make sure it matches what you
-   registered in step 1.
+1. Create a project at console.cloud.google.com (or reuse one).
+2. **Enable the Google Drive API** (APIs & Services → Library).
+3. **Configure the OAuth consent screen** (External). Leaving it in
+   *Testing* is fine for personal use — add your **buffer account's** email
+   as a test user. No verification needed.
+4. **Create an OAuth client ID** (Credentials → Create credentials → OAuth
+   client ID → **Android**):
+   - Package name: `com.example.drivestreamer` (or whatever you rename it to)
+   - SHA-1 fingerprint: see [The debug keystore](#the-debug-keystore) below.
 
-### 3. Get your music folder's Drive ID
-1. Sign into your **buffer account** at drive.google.com.
-2. Open the shared music folder (or its shortcut).
-3. The folder ID is the string after `/folders/` in the URL, e.g.
-   `drive.google.com/drive/folders/`**`1AbCdEfGhIjKlMnOpQrStUvWxYz`**
-4. You'll paste that ID into the app's text field after signing in.
+### 2. Share your music into the buffer account
 
-### 4. Build and run
-Run it on a device (not the emulator, if you want to test actual
-Android Auto — use the [Android Auto Desktop Head
-Unit](https://developer.android.com/training/cars/testing) to test
-without a car).
+1. Create a second Google account to act as the buffer (nothing else in it).
+2. From your main account, share the music folder with the buffer account as
+   **Viewer**.
+3. Signed into the buffer account at drive.google.com, open the shared folder
+   (or add a shortcut to it) and copy its link from the address bar — or the
+   ID after `/folders/`.
 
-## Building from a phone (Acode + GitHub, no Android Studio needed)
+### 3. Build
 
-If you're editing in Acode and syncing via GitHub rather than running
-Android Studio day to day, a committed GitHub Actions workflow
-(`.github/workflows/build.yml`) builds a debug APK in the cloud on
-every push, so you never need a local Android SDK to iterate.
+**With Android Studio:** open the folder as a project, let Gradle sync, and
+run it on a device. If you change `applicationId` or the package, make sure it
+matches what you registered in step 1.
 
-1. Push this project to a GitHub repo (public or private both work —
-   GitHub's free tier includes CI minutes for both).
-2. Any push to `main` triggers the build automatically. You can also
-   trigger it manually from the repo's **Actions** tab → select the
-   workflow → **Run workflow**.
-3. Once it finishes (a few minutes), open that run in the **Actions**
-   tab and scroll to **Artifacts** — download `drivestreamer-debug-apk`.
-   This works fine from your phone's browser or the GitHub app.
-4. Unzip it (most file managers handle this, or the "Files" app can)
-   to get `app-debug.apk`, then tap it to install. You'll need to
-   allow "install unknown apps" for whichever app you downloaded it
-   through (Settings → Apps → [Browser/Files/GitHub] → Install unknown
-   apps).
+**Without Android Studio** — see the next section.
 
-### The fixed debug keystore, and why it matters here
+## Building without Android Studio (GitHub Actions)
 
-Normally Android Studio auto-generates a debug signing key per
-machine, but since GitHub's runners are fresh every build, this repo
-ships a **fixed, committed debug keystore** (`app/debug.keystore`) so
-every build — from CI or any machine — produces the exact same SHA-1
-fingerprint. That's what lets you register it with Google Cloud
-Console once and have it keep working, rather than re-registering
-every time you build somewhere new.
+A GitHub Actions workflow (`.github/workflows/build.yml`) builds a debug APK
+on every push to `main` (or `master`), and can be run by hand from the
+**Actions** tab. That makes it possible to edit code on a phone and never
+install the Android SDK.
 
-This keystore's SHA-1 fingerprint (paste this into the Android OAuth
-client ID form in Cloud Console — **step 6/7** in the setup guide
-above; you can skip running `signingReport` yourself since this value
-is already fixed):
+1. Push to the repo. The workflow builds in a few minutes.
+2. Open the run in the **Actions** tab and download the
+   `drivestreamer-debug-apk` artifact (it works from a phone browser or the
+   GitHub app).
+3. Unzip it to get `app-debug.apk` and install it. You'll need to allow
+   *Install unknown apps* for whichever app you downloaded it with.
+
+The workflow uses JDK 17 and Gradle 8.7, and installs only the SDK
+platform-tools (Gradle fetches the platforms and build-tools itself).
+
+Android Auto itself can't be tested from a phone alone — it needs a car, or
+the Desktop Head Unit on a computer.
+
+### The debug keystore
+
+GitHub's runners are fresh on every build, which would normally give every
+APK a different debug signing key — and Google sign-in only works for the
+key registered in Cloud Console. So the repo commits a **fixed debug
+keystore** (`app/debug.keystore`), and every build, from CI or anywhere else,
+has the same SHA-1. Register this once in the Android OAuth client:
 
 ```
 12:D6:F0:6B:0A:E2:D9:F5:96:90:55:71:9C:3A:5B:A3:31:88:79:5B
 ```
 
-It's a debug-only key (never used for a real signed release), so
-there's no security concern in it being committed to the repo —
-that's intentional and standard practice for CI-built debug APKs.
+It's a debug-only key, never used for a signed release, so committing it is
+intentional and standard for CI-built debug APKs.
 
-### What this does and doesn't cover
+## How it's put together
 
-- **Does**: lets you edit code in Acode, push, and get an installable
-  APK back without ever touching Android Studio.
-- **Doesn't**: let you test Android Auto integration from your phone
-  alone — Auto testing needs either a real car, or a laptop running
-  the [Android Auto Desktop Head
-  Unit](https://developer.android.com/training/cars/testing), which
-  in turn needs `adb` (Android SDK platform-tools) installed — a much
-  lighter install than full Android Studio, but still a one-time
-  laptop step you can't avoid for that specific piece.
+```
+app/src/main/java/com/example/drivestreamer/
+├── auth/
+│   ├── AuthManager.kt          Google sign-in (drive.readonly), sign-out
+│   ├── TokenProvider.kt        Caches the access token; refreshes it before it expires
+│   └── SignOutCleanup.kt       Sign-out plus wiping all local data
+├── drive/
+│   ├── DriveApi.kt             Retrofit interface for the Drive v3 API
+│   ├── DriveLibraryRepository.kt   Recursive folder walk and tag reading
+│   ├── DriveModels.kt          Response models
+│   ├── TrackMetadataLoader.kt  Reads artist/title tags from the Drive stream
+│   ├── TrackNameParser.kt      Filename fallback for untagged files
+│   ├── LibraryCacheStore.kt    The parsed library, saved as JSON on the device
+│   └── AlbumArtLoader.kt       Pulls embedded cover art; in-memory cache
+├── playback/
+│   ├── MusicService.kt         MediaLibraryService: playback, Android Auto browsing
+│   ├── GoogleDriveDataSource.kt    ExoPlayer data source (Range requests, 401 retry)
+│   ├── PlaybackCache.kt        1.5 GB LRU audio cache on disk
+│   ├── PlaybackClient.kt       One shared MediaController for the whole UI
+│   ├── LibraryLoadService.kt   Foreground service for the library scan
+│   ├── LibraryLoadState.kt     Scan progress, shared with the UI
+│   └── AlbumArtContentProvider.kt  Lazy cover art for Android Auto's browse list
+└── ui/
+    ├── LoginActivity.kt        Sign-in screen (launcher)
+    ├── MainActivity.kt         Hosts the three tabs and the mini-player
+    ├── LibraryFragment.kt      Folders, songs, search
+    ├── NowPlayingFragment.kt   Player, artwork-based gradient
+    ├── SettingsFragment.kt     Account, folder link, Load library
+    ├── ArtColors.kt            Picks gradient colours from artwork
+    └── ArtBitmaps.kt           Shared artwork decoding
+```
 
+### Notes on the main pieces
 
+- **Library scan.** The scan walks the whole folder tree (any depth, using
+  cheap metadata-only calls), treats each folder that directly contains audio
+  as an album, then reads tags for every track, six at a time. It runs in a
+  foreground service so it survives backgrounding and a locked screen, and
+  saves the result to `library_cache.json` in the app's internal storage.
+- **One library, shared.** `MusicLibraryHolder` keeps the library in memory
+  and is the single source for both the Library tab and Android Auto, so they
+  can't disagree. It loads from the cache on demand, which is what makes
+  Auto work after a cold start.
+- **Tokens.** Access tokens are refreshed after 45 minutes (they last about
+  an hour), and a `401` mid-stream triggers one retry with a fresh token.
+  Every component asks `TokenProvider` for the token, and sign-out invalidates
+  them all at once.
+- **Cover art.** Pulled out of the audio file itself over the authenticated
+  stream, so there's no separate download. It's fetched in the background
+  after a track starts, then attached to the track's metadata, which feeds the
+  notification, lock screen, Android Auto and the Now Playing tab from one
+  fetch. The Now Playing gradient is computed from that same image.
+- **Audio cache.** Bytes streamed from Drive are written to a 1.5 GB disk
+  cache (least-recently-used eviction), so replaying a track needs no network.
+  It lives in the app's cache directory, which Android may clear when storage
+  is low — it's a cache of recently played music, not an offline download.
+- **Closing the app.** If music is playing when you swipe the app away, it
+  carries on. If it's paused, the playback service shuts down too.
+- **Notifications.** The media notification opens the app on Now Playing; the
+  scan-progress notification opens Settings.
 
-## Known gaps to fill in (this is a scaffold, not a finished app)
+### Dependencies
 
-- **Error handling**: network failures, expired folder shares, and
-  empty folders aren't gracefully handled yet — right now they'll
-  mostly just show an empty list.
-- **UI polish**: no playback progress bar styling beyond a basic
-  `SeekBar`, no album browsing UI (just a flat track list). The
-  `ListView` is functional but not something you'd want to live with
-  day to day.
-- **Nested subfolders**: the repository only goes one level deep
-  (root → album folders → tracks). If your library has deeper nesting
-  you'll want to make `loadLibrary` recursive.
-- **True offline pinning**: the disk cache (see above) only holds
-  what you've *already streamed*, and Android can clear it under
-  storage pressure. If you want to explicitly mark specific
-  albums/tracks as "always available offline" — closer to what
-  Spotify's download button does — that needs a second, separate
-  mechanism: a `CacheWriter` pass that proactively downloads chosen
-  tracks into the cache (or a dedicated non-evictable directory) ahead
-  of time, rather than relying on the LRU cache filling in
-  opportunistically as you listen.
-- **Background token refresh for Auto's "resume" case**: if the OS
-  kills the app process entirely and Android Auto later asks it to
-  resume/restore playback, `MusicService.onCreate()` re-fetches the
-  account and gets a token on first use — that first request will
-  block briefly on the network. Fine for a personal app; if it
-  bothers you, prefetch a token in `onCreate()` before any playback
-  request comes in.
+Media3 (ExoPlayer, session) 1.4.1, Material Components 1.12.0, Retrofit +
+OkHttp + Gson for the Drive API, Kotlin coroutines, and Google Play Services
+Auth.
+
+## Known limitations
+
+- **One account, one folder.** The app is built around a single buffer
+  account and a single music folder.
+- **Cached audio only.** Nothing is pinned for offline use. Playback needs a
+  connection except for what's already in the audio cache.
+- **No playlists or favourites yet.**
+- **Search is exact-substring matching.** Every typed word has to appear
+  somewhere in a folder name, or in a song's title, artist or folder. There's
+  no fuzzy matching for typos, and song results are capped at 200 (the screen
+  says so and asks you to narrow the search).
+- **Whole library in memory.** Fine for several thousand songs; a library in
+  the hundreds of thousands would need a different approach.
+- **Phone battery settings.** Some phones (Samsung, Xiaomi, Oppo and others)
+  stop background apps aggressively. If playback or a library scan dies when
+  the app is closed, set Drive Streamer's battery usage to *Unrestricted* in
+  the phone's settings.
+- **The art provider is exported.** `AlbumArtContentProvider` has to be
+  `exported` so Android Auto can load cover art. Any app on the device can
+  therefore request art through it — image bytes keyed by a Drive file ID, no
+  tokens or account details. That's normal for media-art providers; a
+  signature-level permission would lock it down, at the cost of Auto not being
+  able to read it.
+- **Debug builds only.** CI builds a debug APK signed with the committed debug
+  key. A release build would need its own keystore.
 
 ## Why this approach
 
-- `drive.readonly` is meaningfully narrower than the "manage your
-  entire Drive" scope apps like Symfonium request — read-only, and
-  paired with the buffer-account trick, exposure is limited to
-  whatever's shared into that account.
-- Streaming directly via Range requests means you're not storing your
-  whole library locally, which was the constraint that ruled out the
-  sync-based approach.
-- `MediaLibraryService` is Android's actual sanctioned path for Auto
-  integration — you're not fighting the platform, which is why this
-  should end up more reliable than Symfonium's shared-folder bug once
-  it's finished.
+- `drive.readonly` is far narrower than the "manage all your Drive files"
+  scope that general apps ask for, and combined with the buffer account the
+  exposure is limited to the one shared folder.
+- Streaming with Range requests means your whole library never has to be
+  stored on the phone.
+- `MediaLibraryService` is Android's supported route into Android Auto, so the
+  app behaves like a normal media app there rather than working around the
+  platform.

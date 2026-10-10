@@ -24,6 +24,7 @@ import com.example.drivestreamer.auth.SignOutCleanup
 import com.example.drivestreamer.drive.LibraryCacheStore
 import com.example.drivestreamer.playback.LibraryLoadService
 import com.example.drivestreamer.playback.LibraryLoadState
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,6 +62,7 @@ class SettingsFragment : Fragment(R.layout.fragment_settings) {
     private lateinit var loadLibraryButton: Button
     private lateinit var loadingRow: LinearLayout
     private lateinit var loadingStatusText: TextView
+    private lateinit var loadingBar: LinearProgressIndicator
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -77,9 +79,13 @@ class SettingsFragment : Fragment(R.layout.fragment_settings) {
         loadLibraryButton = view.findViewById(R.id.loadLibraryButton)
         loadingRow = view.findViewById(R.id.loadingRow)
         loadingStatusText = view.findViewById(R.id.loadingStatusText)
+        loadingBar = view.findViewById(R.id.loadingBar)
 
-        view.findViewById<TextView>(R.id.accountText).text =
-            authManager.lastSignedInAccount()?.email ?: ""
+        val email = authManager.lastSignedInAccount()?.email ?: ""
+        view.findViewById<TextView>(R.id.accountText).text = email
+        // The round avatar just shows the account's first letter.
+        view.findViewById<TextView>(R.id.accountAvatar).text =
+            email.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
 
         signOutButton.setOnClickListener { signOut() }
         loadLibraryButton.setOnClickListener { startLibraryLoad() }
@@ -142,10 +148,14 @@ class SettingsFragment : Fragment(R.layout.fragment_settings) {
                 lastHandledTerminal = null
                 setLoadingUi(true)
                 cacheInfoText.text = ""
-                loadingStatusText.text = if (status.total > 0) {
-                    "Reading tags… ${status.done} / ${status.total}"
+                if (status.total > 0) {
+                    loadingStatusText.text = "Reading tags… ${status.done} / ${status.total}"
+                    loadingBar.visibility = View.VISIBLE
+                    loadingBar.max = status.total
+                    loadingBar.setProgressCompat(status.done, true)
                 } else {
-                    "Finding your music…"
+                    loadingStatusText.text = "Finding your music…"
+                    loadingBar.visibility = View.GONE
                 }
             }
             is LibraryLoadState.Status.Complete -> {

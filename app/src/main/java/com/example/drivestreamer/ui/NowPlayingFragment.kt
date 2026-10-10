@@ -249,7 +249,7 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
         ) return
         lastArtBytes = artBytes
 
-        val bitmap = artBytes?.let { decodeScaled(it, 800) }
+        val bitmap = artBytes?.let { ArtBitmaps.decodeScaled(it, 800) }
         if (bitmap == null) {
             albumArt.setImageDrawable(null)
             albumArtPlaceholder.visibility = View.VISIBLE
@@ -264,18 +264,6 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
         albumArt.animate().alpha(1f).setDuration(250).start()
 
         animateBackgroundTo(ArtColors.gradientFor(bitmap))
-    }
-
-    /** Decodes at no more than about [maxSide] pixels, to keep memory sane. */
-    private fun decodeScaled(bytes: ByteArray, maxSide: Int): Bitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= maxSide && bounds.outHeight / (sample * 2) >= maxSide) {
-            sample *= 2
-        }
-        val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 
     /** Cross-fades the background gradient from where it is now to [target]. */

@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1E5F74</color>
+
+    <!-- App palette. Deliberately matches the dark tones the Now Playing
+         gradient fades into, so the tabs feel like one app. -->
+    <color name="app_background">#0B0C12</color>
+    <color name="surface_card">#1A1D2E</color>
+    <color name="surface_raised">#232740</color>
+    <color name="text_primary">#F1F3FA</color>
+    <color name="text_secondary">#A3A9C2</color>
+    <color name="accent">#8F9BFF</color>
+    <color name="accent_dark">#6874D6</color>
+    <color name="on_accent">#0B0C12</color>
+    <color name="divider">#1FFFFFFF</color>
 </resources>

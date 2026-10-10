@@ -1,3 +1,55 @@
 <resources>
-    <style name="Theme.DriveStreamer" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+    <!-- One dark theme for the whole app (a music app that's mostly used in
+         the car or at night). Not DayNight on purpose: Now Playing is
+         always dark, and mixing would look patchy. -->
+    <style name="Theme.DriveStreamer" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorPrimaryVariant">@color/accent_dark</item>
+        <item name="colorOnPrimary">@color/on_accent</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorSecondaryVariant">@color/accent_dark</item>
+        <item name="colorOnSecondary">@color/on_accent</item>
+        <item name="colorSurface">@color/surface_card</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="android:colorBackground">@color/app_background</item>
+        <item name="colorOnBackground">@color/text_primary</item>
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+
+        <item name="materialButtonStyle">@style/Widget.DriveStreamer.Button</item>
+        <item name="bottomNavigationStyle">@style/Widget.DriveStreamer.BottomNav</item>
+    </style>
+
+    <!-- Filled button: rounder, sentence case. -->
+    <style name="Widget.DriveStreamer.Button" parent="Widget.MaterialComponents.Button">
+        <item name="cornerRadius">14dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
+    </style>
+
+    <!-- Low-emphasis button (Sign out, Cancel). -->
+    <style name="Widget.DriveStreamer.Button.Text" parent="Widget.MaterialComponents.Button.TextButton">
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <!-- Outlined button (Open Settings on the empty library). -->
+    <style name="Widget.DriveStreamer.Button.Outlined" parent="Widget.MaterialComponents.Button.OutlinedButton">
+        <item name="cornerRadius">14dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <!-- Bottom tab bar: same colour as the window, so it doesn't look like a
+         separate slab under the content. -->
+    <style name="Widget.DriveStreamer.BottomNav" parent="Widget.MaterialComponents.BottomNavigationView">
+        <item name="backgroundTint">@color/app_background</item>
+    </style>
 </resources>
