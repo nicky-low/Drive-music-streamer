@@ -1,23 +1,33 @@
 package com.example.drivestreamer.ui
 
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Parcelable
 import android.view.View
-import android.widget.ArrayAdapter
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.Button
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.ListView
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
 import com.example.drivestreamer.R
 import com.example.drivestreamer.drive.Album
+import com.example.drivestreamer.drive.Track
 import com.example.drivestreamer.playback.LibraryLoadState
 import com.example.drivestreamer.playback.MusicLibraryHolder
 import com.example.drivestreamer.playback.PlaybackClient
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.launch
 
 /**
@@ -25,6 +35,8 @@ import kotlinx.coroutines.launch
  * open. The library itself comes from MusicLibraryHolder — the same copy
  * Android Auto browses — so this tab and Auto can never disagree, and a
  * fresh scan started from Settings shows up here by itself.
+ *
+ * Inside a folder, the track that's currently playing is highlighted.
  */
 class LibraryFragment : Fragment(R.layout.fragment_library) {
 
@@ -48,11 +60,18 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
     // the top — the annoying part of a long folder list otherwise.
     private var albumListScrollState: Parcelable? = null
 
-    private lateinit var backButton: Button
-    private lateinit var listTitleText: TextView
+    // Which track is playing right now (for the highlight in a folder).
+    private var controller: MediaController? = null
+    private var playingMediaId: String? = null
+    private var trackAdapter: TrackAdapter? = null
+
+    private lateinit var backButton: ImageButton
+    private lateinit var titleText: TextView
     private lateinit var listView: ListView
-    private lateinit var emptyText: TextView
+    private lateinit var emptyState: View
+    private lateinit var loadingBanner: View
     private lateinit var loadingText: TextView
+    private lateinit var loadingBar: LinearProgressIndicator
 
     private val libraryChangedListener: () -> Unit = {
         // A fresh scan finished, or the library was cleared on sign-out.
@@ -65,16 +84,31 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         }
     }
 
+    private val playerListener = object : Player.Listener {
+        override fun onEvents(player: Player, events: Player.Events) {
+            val id = player.currentMediaItem?.mediaId
+            if (id != playingMediaId) {
+                playingMediaId = id
+                trackAdapter?.notifyDataSetChanged()
+            }
+        }
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
         backButton = view.findViewById(R.id.backButton)
-        listTitleText = view.findViewById(R.id.listTitleText)
+        titleText = view.findViewById(R.id.listTitleText)
         listView = view.findViewById(R.id.trackListView)
-        emptyText = view.findViewById(R.id.emptyText)
+        emptyState = view.findViewById(R.id.emptyState)
+        loadingBanner = view.findViewById(R.id.loadingBanner)
         loadingText = view.findViewById(R.id.loadingText)
+        loadingBar = view.findViewById(R.id.loadingBar)
 
         backButton.setOnClickListener { showAlbumList() }
+        view.findViewById<Button>(R.id.emptySettingsButton).setOnClickListener {
+            (activity as? MainActivity)?.showSettings()
+        }
 
         pendingOpenAlbum = savedInstanceState?.getInt(KEY_OPEN_ALBUM, -1) ?: -1
 
@@ -102,6 +136,15 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
                 LibraryLoadState.status.collect { renderLoading(it) }
             }
         }
+
+        // Follow what's playing, to highlight it inside a folder.
+        PlaybackClient.connect(appContext) { c ->
+            if (this.view == null) return@connect
+            controller = c
+            c.addListener(playerListener)
+            playingMediaId = c.currentMediaItem?.mediaId
+            trackAdapter?.notifyDataSetChanged()
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -111,6 +154,9 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     override fun onDestroyView() {
         MusicLibraryHolder.removeListener(libraryChangedListener)
+        controller?.removeListener(playerListener)
+        controller = null
+        trackAdapter = null
         super.onDestroyView()
     }
 
@@ -123,14 +169,18 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     private fun renderLoading(status: LibraryLoadState.Status) {
         if (status is LibraryLoadState.Status.Loading) {
-            loadingText.visibility = View.VISIBLE
-            loadingText.text = if (status.total > 0) {
-                "Loading library… ${status.done} / ${status.total}"
+            loadingBanner.visibility = View.VISIBLE
+            if (status.total > 0) {
+                loadingText.text = "Loading library… ${status.done} / ${status.total}"
+                loadingBar.visibility = View.VISIBLE
+                loadingBar.max = status.total
+                loadingBar.setProgressCompat(status.done, true)
             } else {
-                "Finding your music…"
+                loadingText.text = "Finding your music…"
+                loadingBar.visibility = View.GONE
             }
         } else {
-            loadingText.visibility = View.GONE
+            loadingBanner.visibility = View.GONE
         }
     }
 
@@ -149,13 +199,13 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     private fun showAlbumList() {
         openAlbumIndex = null
+        trackAdapter = null
         backButton.visibility = View.GONE
-        listTitleText.text = "Albums"
-        emptyText.visibility =
+        titleText.text = "Library"
+        emptyState.visibility =
             if (albums.isEmpty() && cacheChecked) View.VISIBLE else View.GONE
 
-        val labels = albums.map { it.name }
-        listView.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, labels)
+        listView.adapter = AlbumAdapter(albums)
         listView.setOnItemClickListener { _, _, position, _ -> showTracksForAlbum(position) }
 
         // Restore exact scroll offset captured when we last left this
@@ -173,14 +223,79 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         val album = albums.getOrNull(albumIndex) ?: return
         openAlbumIndex = albumIndex
         backButton.visibility = View.VISIBLE
-        listTitleText.text = album.name
-        emptyText.visibility = View.GONE
+        titleText.text = album.name
+        emptyState.visibility = View.GONE
 
-        val labels = album.tracks.map { it.displayLabel }
-        listView.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, labels)
+        val adapter = TrackAdapter(album.tracks)
+        trackAdapter = adapter
+        listView.adapter = adapter
         listView.setOnItemClickListener { _, _, position, _ ->
             val flatIndex = albums.take(albumIndex).sumOf { it.tracks.size } + position
             playTrackAt(flatIndex)
+        }
+    }
+
+    // --- Rows ----------------------------------------------------------
+
+    private inner class AlbumAdapter(private val items: List<Album>) : BaseAdapter() {
+        override fun getCount() = items.size
+        override fun getItem(position: Int) = items[position]
+        override fun getItemId(position: Int) = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val row = convertView ?: layoutInflater.inflate(R.layout.item_album, parent, false)
+            val album = items[position]
+            val tile = row.findViewById<TextView>(R.id.albumTile)
+            tile.text = initialFor(album.name)
+            tile.background = tileBackground(album.name)
+            row.findViewById<TextView>(R.id.albumName).text = album.name
+            return row
+        }
+    }
+
+    private inner class TrackAdapter(private val items: List<Track>) : BaseAdapter() {
+        override fun getCount() = items.size
+        override fun getItem(position: Int) = items[position]
+        override fun getItemId(position: Int) = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val row = convertView ?: layoutInflater.inflate(R.layout.item_track, parent, false)
+            val track = items[position]
+            val isPlaying = track.fileId == playingMediaId
+            val ctx = parent.context
+
+            val number = row.findViewById<TextView>(R.id.trackNumber)
+            val playingIcon = row.findViewById<ImageView>(R.id.playingIcon)
+            number.text = (position + 1).toString()
+            number.visibility = if (isPlaying) View.INVISIBLE else View.VISIBLE
+            playingIcon.visibility = if (isPlaying) View.VISIBLE else View.GONE
+
+            val title = row.findViewById<TextView>(R.id.trackName)
+            title.text = track.displayTitle
+            title.setTextColor(
+                ContextCompat.getColor(ctx, if (isPlaying) R.color.accent else R.color.text_primary)
+            )
+
+            val artist = row.findViewById<TextView>(R.id.trackArtistName)
+            artist.text = track.displayArtist
+            artist.visibility = if (track.displayArtist.isBlank()) View.GONE else View.VISIBLE
+            return row
+        }
+    }
+
+    /** First letter or digit of the name, for the folder's tile. */
+    private fun initialFor(name: String): String =
+        name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "♪"
+
+    /** A rounded tile whose colour is derived from the name, so each folder is recognisable. */
+    private fun tileBackground(name: String): GradientDrawable {
+        val hue = (name.hashCode() and 0x7fffffff) % 360
+        val color = Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.45f, 0.52f))
+        val radius = 12f * resources.displayMetrics.density
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setColor(color)
         }
     }
 
@@ -204,10 +319,10 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
                 .build()
         }
 
-        PlaybackClient.connect(requireContext().applicationContext) { controller ->
-            controller.setMediaItems(mediaItems, flatIndex, 0L)
-            controller.prepare()
-            controller.play()
+        PlaybackClient.connect(requireContext().applicationContext) { c ->
+            c.setMediaItems(mediaItems, flatIndex, 0L)
+            c.prepare()
+            c.play()
             (activity as? MainActivity)?.showNowPlaying()
         }
     }
