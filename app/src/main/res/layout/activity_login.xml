@@ -2,22 +2,58 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@drawable/bg_gradient_default"
     android:orientation="vertical"
     android:gravity="center"
     android:padding="32dp">
 
+    <FrameLayout
+        android:layout_width="112dp"
+        android:layout_height="112dp"
+        android:background="@drawable/bg_login_logo">
+
+        <ImageView
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="center"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_nav_now_playing"
+            app:tint="@color/accent"
+            xmlns:app="http://schemas.android.com/apk/res-auto" />
+    </FrameLayout>
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="28dp"
         android:text="Drive Streamer"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="32dp" />
+        android:textColor="@color/text_primary"
+        android:textSize="30sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:text="Your Google Drive music,\nin your pocket and in the car"
+        android:textColor="@color/text_secondary"
+        android:textSize="15sp" />
 
     <Button
         android:id="@+id/signInButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
         android:text="Sign in with buffer account" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:text="Read-only access. Only the music folder shared with this account is ever visible."
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
 
 </LinearLayout>
