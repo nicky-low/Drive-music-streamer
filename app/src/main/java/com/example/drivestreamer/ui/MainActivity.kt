@@ -1,10 +1,11 @@
 package com.example.drivestreamer.ui
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.View
-import android.widget.Button
-import android.widget.LinearLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
@@ -42,10 +43,15 @@ class MainActivity : AppCompatActivity() {
     private val authManager by lazy { AuthManager(this) }
 
     private lateinit var bottomNav: BottomNavigationView
-    private lateinit var miniPlayer: LinearLayout
+    private lateinit var miniPlayer: View
+    private lateinit var miniArt: ImageView
     private lateinit var miniTitle: TextView
     private lateinit var miniArtist: TextView
-    private lateinit var miniPlayPause: Button
+    private lateinit var miniPlayPause: ImageButton
+
+    // The artwork bytes behind the mini-player thumbnail, so repeated
+    // player events for the same track don't re-decode the image.
+    private var lastMiniArtBytes: ByteArray? = null
 
     private var currentTabId = R.id.nav_library
 
@@ -66,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
         bottomNav = findViewById(R.id.bottomNav)
         miniPlayer = findViewById(R.id.miniPlayer)
+        miniArt = findViewById(R.id.miniArt)
         miniTitle = findViewById(R.id.miniTitle)
         miniArtist = findViewById(R.id.miniArtist)
         miniPlayPause = findViewById(R.id.miniPlayPause)
@@ -150,6 +157,8 @@ class MainActivity : AppCompatActivity() {
     /** Called by fragments, e.g. after tapping a song. */
     fun showNowPlaying() = selectTab(R.id.nav_now_playing)
 
+    fun showSettings() = selectTab(R.id.nav_settings)
+
     private fun selectTab(itemId: Int) {
         if (bottomNav.selectedItemId != itemId) bottomNav.selectedItemId = itemId
     }
@@ -208,6 +217,19 @@ class MainActivity : AppCompatActivity() {
         miniArtist.visibility = if (artist.isBlank()) View.GONE else View.VISIBLE
         val showPause = player.isPlaying ||
             (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)
-        miniPlayPause.text = if (showPause) "⏸" else "▶"
+        miniPlayPause.setImageResource(if (showPause) R.drawable.ic_np_pause else R.drawable.ic_np_play)
+        updateMiniArt(metadata.artworkData)
+    }
+
+    /** Sets the mini-player thumbnail, skipping the decode if it's the picture already shown. */
+    private fun updateMiniArt(bytes: ByteArray?) {
+        val previous = lastMiniArtBytes
+        if (bytes === previous ||
+            (bytes != null && previous != null && bytes.contentEquals(previous))
+        ) return
+        lastMiniArtBytes = bytes
+
+        val bitmap: Bitmap? = bytes?.let { ArtBitmaps.decodeScaled(it, 160) }
+        if (bitmap != null) miniArt.setImageBitmap(bitmap) else miniArt.setImageDrawable(null)
     }
 }
