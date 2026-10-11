@@ -39,6 +39,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 // Shuffle and repeat buttons shown by Android Auto (and in the phone's media
 // notification). They're "custom commands": Auto sends the action name back
@@ -236,19 +237,42 @@ class MusicService : MediaLibraryService() {
     }
 
     /**
-     * The queue to play when asked for a single id: the whole album that
-     * contains the track, starting at that track (so Next/Previous work
-     * in Auto). Also accepts an album id, starting from its first track.
+     * The queue to play when asked for a single id (all Android Auto sends
+     * when you tap a song): the whole library in folder order, starting at
+     * that song. This matches what tapping a song in the app does, so Next
+     * carries on into the following folder and Shuffle covers everything.
+     * An album id is accepted too, starting from that album's first track.
+     *
+     * Returns null if the id isn't in the library.
      */
     private fun queueFor(mediaId: String): Pair<List<MediaItem>, Int>? {
         val albums = MusicLibraryHolder.albums
+
+        // Where the requested track (or, failing that, album) sits in the
+        // flattened library.
+        var startIndex = -1
+        var offset = 0
         for (album in albums) {
-            val index = album.tracks.indexOfFirst { it.fileId == mediaId }
-            if (index >= 0) return album.tracks.map { trackToMediaItem(it) } to index
+            val inAlbum = album.tracks.indexOfFirst { it.fileId == mediaId }
+            if (inAlbum >= 0) {
+                startIndex = offset + inAlbum
+                break
+            }
+            offset += album.tracks.size
         }
-        albums.firstOrNull { it.folderId == mediaId && it.tracks.isNotEmpty() }
-            ?.let { return it.tracks.map { t -> trackToMediaItem(t) } to 0 }
-        return null
+        if (startIndex < 0) {
+            offset = 0
+            for (album in albums) {
+                if (album.folderId == mediaId && album.tracks.isNotEmpty()) {
+                    startIndex = offset
+                    break
+                }
+                offset += album.tracks.size
+            }
+        }
+        if (startIndex < 0) return null
+
+        return albums.flatMap { it.tracks }.map { trackToMediaItem(it) } to startIndex
     }
 
     private fun buildCachingDataSourceFactory(): DataSource.Factory {
@@ -442,7 +466,8 @@ class MusicService : MediaLibraryService() {
             MusicLibraryHolder.ensureLoaded(applicationContext)
             val single = mediaItems.singleOrNull()
             val queue = if (single != null && single.localConfiguration == null) {
-                queueFor(single.mediaId)
+                // A few thousand items to build: keep it off the main thread.
+                withContext(Dispatchers.Default) { queueFor(single.mediaId) }
             } else null
 
             if (queue != null) {
