@@ -1,9 +1,8 @@
 package com.example.drivestreamer.drive
 
-import android.media.MediaMetadataRetriever
 import android.util.LruCache
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Pulls embedded cover art (ID3 APIC frames, FLAC PICTURE blocks, etc.)
@@ -11,9 +10,9 @@ import kotlinx.coroutines.withContext
  * an external metadata service — this keeps it accurate to your actual
  * files and needs no extra API keys.
  *
- * MediaMetadataRetriever supports HTTP(S) sources with custom headers,
- * so we can point it straight at the authenticated Drive media URL and
- * let the platform handle the range-fetching needed to find the tag.
+ * The file is read from Drive through [DriveMediaDataSource], so the
+ * request has a timeout, can be cancelled, and reads only as much of the
+ * file as the tag block needs.
  */
 class AlbumArtLoader {
 
@@ -28,30 +27,40 @@ class AlbumArtLoader {
         private val cache = LruCache<String, ByteArray>(40)
         private val NO_ART = ByteArray(0)
 
+        // Embedded art can be several megabytes; this is a ceiling, not a target.
+        private const val MAX_ART_BYTES = 16L * 1024 * 1024
+        private const val TIMEOUT_MS = 30_000L
+
         /** Drops every cached image (and "no art" marker), e.g. on sign-out. */
         fun clearCache() {
             cache.evictAll()
         }
     }
 
-    suspend fun fetchEmbeddedArt(fileId: String, accessToken: String): ByteArray? =
-        withContext(Dispatchers.IO) {
-            cache.get(fileId)?.let { cached ->
-                return@withContext if (cached.isEmpty()) null else cached
-            }
+    private class Found(val bytes: ByteArray?)
 
-            val retriever = MediaMetadataRetriever()
-            val bytes = try {
-                val url = "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"
-                retriever.setDataSource(url, mapOf("Authorization" to "Bearer $accessToken"))
-                retriever.embeddedPicture
-            } catch (e: Exception) {
-                null
-            } finally {
-                retriever.release()
-            }
-
-            cache.put(fileId, bytes ?: NO_ART)
-            bytes
+    suspend fun fetchEmbeddedArt(fileId: String, accessToken: String): ByteArray? {
+        cache.get(fileId)?.let { cached ->
+            return if (cached.isEmpty()) null else cached
         }
+
+        val source = DriveMediaDataSource(DriveHttp.client, fileId, accessToken, MAX_ART_BYTES)
+        val found: Found? = try {
+            withTimeoutOrNull(TIMEOUT_MS) {
+                Found(withRetriever(source) { it.embeddedPicture })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The platform couldn't read it. A passing network problem
+            // shouldn't be remembered as "this track has no art".
+            if (source.isTemporaryFailure) return null else Found(null)
+        }
+
+        // Timed out: don't record anything, so it's tried again next time.
+        if (found == null) return null
+
+        cache.put(fileId, found.bytes ?: NO_ART)
+        return found.bytes
+    }
 }
