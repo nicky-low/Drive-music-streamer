@@ -15,7 +15,7 @@ interface DriveApi {
     suspend fun listChildren(
         @Header("Authorization") bearerToken: String,
         @Query("q") query: String,
-        @Query("fields") fields: String = "nextPageToken, files(id, name, mimeType, parents)",
+        @Query("fields") fields: String = "nextPageToken, files(id, name, mimeType, parents, modifiedTime)",
         @Query("pageSize") pageSize: Int = 200,
         @Query("pageToken") pageToken: String? = null
     ): DriveFileListResponse
