@@ -47,8 +47,10 @@ account would defeat this, so don't.
 1. **Sign in** with the buffer account on the first screen.
 2. Open **Settings**, paste your music folder's Drive **link** (or just its
    ID) and tap **Load library**. A progress notification shows while it
-   scans, and you can cancel it. With a large collection (thousands of songs)
-   the first scan takes a while; it keeps running if you leave the app.
+   scans, and you can cancel it at any time. With a large collection
+   (thousands of songs) the first scan takes a while; it keeps running if you
+   leave the app. If it's interrupted, tapping **Load library** again picks up
+   where it left off rather than starting over.
 3. Go to **Library** to browse or search, and tap a song to play it. You land
    on **Now Playing**.
 4. Later launches show the cached library straight away. Tap **Load
@@ -66,10 +68,10 @@ fall back to parsing the filename (`01 - Artist - Title.mp3` and similar).
 
 ### Queues
 
-- Tapping a song in the **app** queues your whole library in folder order,
-  starting at that song, so playback carries on into the next folder.
-- Tapping a song in **Android Auto** queues just that song's folder, starting
-  at that song, so Next and Previous stay within the album.
+Tapping a song queues your whole library in folder order, starting at that
+song — the same in the app and in Android Auto. Playback carries on into the
+next folder when a folder ends, Next and Previous cross folder boundaries, and
+Shuffle covers everything.
 
 ## Android Auto
 
@@ -166,7 +168,9 @@ app/src/main/java/com/example/drivestreamer/
 │   ├── DriveApi.kt             Retrofit interface for the Drive v3 API
 │   ├── DriveLibraryRepository.kt   Recursive folder walk and tag reading
 │   ├── DriveModels.kt          Response models
-│   ├── TrackMetadataLoader.kt  Reads artist/title tags from the Drive stream
+│   ├── TrackMetadataLoader.kt  Reads artist/title tags (with timeouts and retries)
+│   ├── DriveMediaDataSource.kt Bounded, cancellable Drive reader used for tags and art
+│   ├── TagCache.kt             Tags already read, saved so an interrupted scan can resume
 │   ├── TrackNameParser.kt      Filename fallback for untagged files
 │   ├── LibraryCacheStore.kt    The parsed library, saved as JSON on the device
 │   └── AlbumArtLoader.kt       Pulls embedded cover art; in-memory cache
@@ -193,8 +197,22 @@ app/src/main/java/com/example/drivestreamer/
 - **Library scan.** The scan walks the whole folder tree (any depth, using
   cheap metadata-only calls), treats each folder that directly contains audio
   as an album, then reads tags for every track, six at a time. It runs in a
-  foreground service so it survives backgrounding and a locked screen, and
-  saves the result to `library_cache.json` in the app's internal storage.
+  foreground service, off the main thread, so it survives backgrounding and a
+  locked screen and never freezes the UI. The result is saved to
+  `library_cache.json` in the app's internal storage.
+- **A scan that can't hang.** Tags are read through `DriveMediaDataSource`,
+  which fetches only the start of each file (and caps how much it will read)
+  with Range requests over a shared HTTP client that has real timeouts. Every
+  request can be aborted instantly, so **Cancel works at once** and a stalled
+  file can't wedge the scan; a passing failure (throttling, a dropped
+  connection) is retried with a pause. If Drive stops answering altogether,
+  the scan stops with a clear message instead of grinding on.
+- **A scan that can resume.** Tags are saved to `tag_cache.json` as the scan
+  goes (and when it's cancelled or fails), keyed by file and last-modified
+  time. The next **Load library** skips everything already read and carries on
+  from where it stopped, so an interrupted first scan of a big library isn't
+  wasted. Files you've re-tagged in Drive are read again. Signing out deletes
+  this cache with everything else.
 - **One library, shared.** `MusicLibraryHolder` keeps the library in memory
   and is the single source for both the Library tab and Android Auto, so they
   can't disagree. It loads from the cache on demand, which is what makes

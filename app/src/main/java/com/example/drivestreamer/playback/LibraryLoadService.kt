@@ -8,19 +8,24 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.auth.TokenProvider
 import com.example.drivestreamer.drive.DriveLibraryRepository
 import com.example.drivestreamer.drive.LibraryCacheStore
+import com.example.drivestreamer.drive.TagCache
 import com.example.drivestreamer.ui.MainActivity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Runs the library load — potentially thousands of per-track tag
@@ -39,10 +44,24 @@ class LibraryLoadService : Service() {
         const val ACTION_CANCEL = "com.example.drivestreamer.action.CANCEL_LOAD"
         private const val CHANNEL_ID = "library_loading"
         private const val NOTIFICATION_ID = 1001
-        private const val NOTIFY_EVERY_N_TRACKS = 5
+
+        // Notifications are rate-limited by Android; once a second is plenty.
+        private const val NOTIFY_INTERVAL_MS = 1_000L
+
+        // If Cancel is tapped and the scan still hasn't wound down after
+        // this long, shut the service down anyway.
+        private const val CANCEL_FAILSAFE_MS = 8_000L
     }
 
-    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    // Deliberately NOT the main thread. The scan does a lot of work —
+    // thousands of tasks, a big sort, JSON saving — and on the main thread
+    // any stall in it froze the UI, including the Cancel button that was
+    // supposed to stop it. Anything that touches the UI or the media
+    // session switches to Main explicitly where needed.
+    private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
+    private var lastNotifyAt = 0L
+    @Volatile private var lastDone = 0
+    @Volatile private var lastTotal = 0
     private lateinit var tokenProvider: TokenProvider
     private val repository = DriveLibraryRepository()
     private var loadJob: Job? = null
@@ -65,7 +84,36 @@ class LibraryLoadService : Service() {
             // updating LibraryLoadState and stopping the service, so
             // there's one single place that does that cleanup rather than
             // duplicating it here too.
-            loadJob?.cancel()
+            val job = loadJob
+            job?.cancel()
+
+            // Cancelling normally takes effect within moments. But if
+            // something is stuck, never leave an unkillable notification
+            // behind: if the job still hasn't finished shortly after, shut
+            // the service down regardless.
+            if (job != null) {
+                serviceScope.launch {
+                    delay(CANCEL_FAILSAFE_MS)
+                    if (!job.isCompleted) {
+                        withContext(Dispatchers.Main) {
+                            LibraryLoadState.update(LibraryLoadState.Status.Cancelled)
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
+                        }
+                    }
+                }
+            }
+            return START_NOT_STICKY
+        }
+
+        // Already scanning (e.g. a double tap): don't start a second scan
+        // alongside the first. A started foreground service still has to
+        // call startForeground, so re-post the current notification.
+        if (loadJob?.isActive == true) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification("Reading tags…", lastDone, lastTotal)
+            )
             return START_NOT_STICKY
         }
 
@@ -78,15 +126,26 @@ class LibraryLoadService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("Finding your music…", 0, 0))
         LibraryLoadState.update(LibraryLoadState.Status.Loading(0, 0))
 
+        lastNotifyAt = 0L
+        lastDone = 0
+        lastTotal = 0
+
         loadJob = serviceScope.launch {
             try {
-                val albums = repository.loadLibrary(tokenProvider, folderId) { done, total ->
+                val tagCache = TagCache(applicationContext)
+                val albums = repository.loadLibrary(tokenProvider, folderId, tagCache) { done, total ->
+                    lastDone = done
+                    lastTotal = total
                     LibraryLoadState.update(LibraryLoadState.Status.Loading(done, total))
-                    if (done % NOTIFY_EVERY_N_TRACKS == 0 || done == total) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastNotifyAt >= NOTIFY_INTERVAL_MS || done == total) {
+                        lastNotifyAt = now
                         updateNotification("Reading tags…", done, total)
                     }
                 }
-                MusicLibraryHolder.replace(albums)
+                // The in-memory library notifies the UI and Android Auto,
+                // so that part has to happen on the main thread.
+                withContext(Dispatchers.Main) { MusicLibraryHolder.replace(albums) }
                 LibraryCacheStore(applicationContext).save(folderId, albums)
                 LibraryLoadState.update(LibraryLoadState.Status.Complete(albums))
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -96,8 +155,12 @@ class LibraryLoadService : Service() {
                     LibraryLoadState.Status.Error(e.message ?: e::class.simpleName ?: "Unknown error")
                 )
             } finally {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                // NonCancellable: this must run even when we got here
+                // because of a cancel.
+                withContext(NonCancellable + Dispatchers.Main) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
 

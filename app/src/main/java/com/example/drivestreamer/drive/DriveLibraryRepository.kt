@@ -1,6 +1,7 @@
 package com.example.drivestreamer.drive
 
 import com.example.drivestreamer.auth.TokenProvider
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -8,8 +9,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
@@ -34,6 +38,19 @@ class DriveLibraryRepository {
 
     companion object {
         private const val TAG_FETCH_CONCURRENCY = 6
+
+        // Save the tag cache to disk this often while scanning, so an
+        // interruption loses at most this many tracks' worth of work.
+        private const val SAVE_EVERY = 250
+
+        // If this many tracks in a row can't be read at all (after their
+        // own retries), Drive or the connection is down. Stop and say so,
+        // rather than grinding through thousands more doomed attempts.
+        private const val MAX_CONSECUTIVE_FAILURES = 12
+
+        // Compiled once. (It used to be rebuilt on every single comparison
+        // while sorting, which added up to seconds of pure waste.)
+        private val NUMBER_OR_TEXT = Regex("""\d+|\D+""")
     }
 
     private val metadataLoader = TrackMetadataLoader()
@@ -44,6 +61,7 @@ class DriveLibraryRepository {
         }
         val client = OkHttpClient.Builder()
             .addInterceptor(logging)
+            .callTimeout(30, TimeUnit.SECONDS)
             .build()
 
         Retrofit.Builder()
@@ -57,12 +75,16 @@ class DriveLibraryRepository {
     suspend fun loadLibrary(
         tokenProvider: TokenProvider,
         rootFolderId: String,
+        tagCache: TagCache,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
     ): List<Album> {
         // One token is fine for the folder walk below — even on a huge
         // tree it's metadata-only calls and finishes in seconds, well
         // inside any reasonable token lifetime.
         val bearer = "Bearer ${tokenProvider.getToken()}"
+
+        // Tags already read by an earlier (maybe interrupted) scan.
+        tagCache.load()
 
         // Walk the whole tree first (cheap, metadata-only calls) to find
         // every folder that directly contains audio — at any depth, not
@@ -74,31 +96,71 @@ class DriveLibraryRepository {
 
         val total = pending.size
         var done = 0
+        var consecutiveFailures = 0
         val progressMutex = Mutex()
         val semaphore = Semaphore(TAG_FETCH_CONCURRENCY)
 
-        val results = coroutineScope {
-            pending.map { (folderId, file) ->
-                async {
-                    val track = semaphore.withPermit {
-                        // Fetched fresh per track rather than reusing the
-                        // token grabbed above — on a library this size the
-                        // tag-reading phase alone can run well past an
-                        // hour, long enough for that earlier token to
-                        // expire mid-run. TokenProvider caches internally,
-                        // so this is a cheap no-op call except when an
-                        // actual refresh is due.
-                        val freshToken = tokenProvider.getToken()
-                        buildTrack(file, albumsByFolderId.getValue(folderId).name, freshToken)
+        val results = try {
+            coroutineScope {
+                pending.map { (folderId, file) ->
+                    async {
+                        val albumName = albumsByFolderId.getValue(folderId).name
+
+                        // Already read on an earlier scan? Then no network at all.
+                        val cached = tagCache.get(file.id, file.modifiedTime)
+                        var failed = false
+                        val track = if (cached != null) {
+                            trackFor(file, albumName, cached.artist, cached.title)
+                        } else {
+                            val tags = semaphore.withPermit {
+                                // Fetched fresh per track rather than reusing
+                                // the token grabbed above — on a library this
+                                // size the tag-reading phase can run well past
+                                // an hour, long enough for that earlier token
+                                // to expire mid-run. TokenProvider caches
+                                // internally, so this is a cheap no-op call
+                                // except when an actual refresh is due.
+                                val freshToken = tokenProvider.getToken()
+                                metadataLoader.fetchTags(file.id, freshToken)
+                            }
+                            failed = tags.failed
+                            // Remember real answers (including "this file has
+                            // no tags"), but not failures: those get another
+                            // go on the next scan.
+                            if (!failed) tagCache.put(file.id, file.modifiedTime, tags.artist, tags.title)
+                            trackFor(file, albumName, tags.artist, tags.title)
+                        }
+
+                        progressMutex.withLock {
+                            done++
+                            if (failed) {
+                                consecutiveFailures++
+                                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                                    throw IOException(
+                                        "Couldn't reach Google Drive. Check your connection " +
+                                            "and try again — progress so far is saved."
+                                    )
+                                }
+                            } else {
+                                consecutiveFailures = 0
+                            }
+                            onProgress(done, total)
+                            if (done % SAVE_EVERY == 0) tagCache.save()
+                        }
+                        folderId to track
                     }
-                    progressMutex.withLock {
-                        done++
-                        onProgress(done, total)
-                    }
-                    folderId to track
-                }
-            }.awaitAll()
+                }.awaitAll()
+            }
+        } finally {
+            // Whatever happened — finished, cancelled, or failed — keep
+            // what was read. NonCancellable so this still runs when the
+            // scan is being cancelled.
+            withContext(NonCancellable) { tagCache.save() }
         }
+
+        // Finished: forget cache entries for files that are gone.
+        tagCache.retainOnly(pending.map { it.second.id }.toSet())
+        tagCache.save()
 
         results.forEach { (folderId, track) ->
             albumsByFolderId.getValue(folderId).tracks.add(track)
@@ -148,15 +210,15 @@ class DriveLibraryRepository {
         }
     }
 
-    private suspend fun buildTrack(audioFile: DriveFile, albumName: String, accessToken: String): Track {
-        val tags = metadataLoader.fetchTags(audioFile.id, accessToken)
+    /** Builds a track, using the filename for any tag the file didn't have. */
+    private fun trackFor(audioFile: DriveFile, albumName: String, artist: String?, title: String?): Track {
         val (fallbackArtist, fallbackTitle) = TrackNameParser.parse(audioFile.name)
         return Track(
             fileId = audioFile.id,
             rawFileName = audioFile.name,
             albumName = albumName,
-            displayArtist = tags.artist ?: fallbackArtist,
-            displayTitle = tags.title ?: fallbackTitle
+            displayArtist = artist ?: fallbackArtist,
+            displayTitle = title ?: fallbackTitle
         )
     }
 
@@ -177,9 +239,8 @@ class DriveLibraryRepository {
 
     /** "2" sorts before "10"; case-insensitive comparison on non-numeric runs. */
     private fun naturalCompare(a: String, b: String): Int {
-        val regex = Regex("""\d+|\D+""")
-        val aParts = regex.findAll(a).map { it.value }.toList()
-        val bParts = regex.findAll(b).map { it.value }.toList()
+        val aParts = NUMBER_OR_TEXT.findAll(a).map { it.value }.toList()
+        val bParts = NUMBER_OR_TEXT.findAll(b).map { it.value }.toList()
         val len = minOf(aParts.size, bParts.size)
         for (i in 0 until len) {
             val ap = aParts[i]
