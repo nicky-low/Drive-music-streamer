@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import com.example.drivestreamer.drive.AlbumArtLoader
 import com.example.drivestreamer.drive.LibraryCacheStore
+import com.example.drivestreamer.drive.TagCache
 import com.example.drivestreamer.playback.LibraryLoadService
 import com.example.drivestreamer.playback.LibraryLoadState
 import com.example.drivestreamer.playback.MusicLibraryHolder
@@ -60,6 +61,7 @@ object SignOutCleanup {
         // 5. Local data. Cache file first, then the in-memory copy, so a
         //    browse request can't reload the file we're about to delete.
         runCatching { LibraryCacheStore(app).clear() }
+        runCatching { TagCache.delete(app) }
         runCatching { MusicLibraryHolder.clear() }
         AlbumArtLoader.clearCache()
         LibraryLoadState.update(LibraryLoadState.Status.Idle)
