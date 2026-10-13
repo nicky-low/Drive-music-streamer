@@ -52,6 +52,18 @@
             </intent-filter>
         </service>
 
+        <!-- Lets a "play" press from a car or Bluetooth device restart the
+             app's music service even when the app has been fully closed
+             (the service then resumes what was playing — see
+             MusicService.onPlaybackResumption). -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <!-- Runs the (potentially long) library load independently of
              the UI's lifecycle — see LibraryLoadService for why. -->
         <service
