@@ -8,6 +8,7 @@ import com.example.drivestreamer.drive.TagCache
 import com.example.drivestreamer.playback.LibraryLoadService
 import com.example.drivestreamer.playback.LibraryLoadState
 import com.example.drivestreamer.playback.MusicLibraryHolder
+import com.example.drivestreamer.playback.PlaybackStateStore
 import com.example.drivestreamer.playback.PlaybackCache
 import com.example.drivestreamer.playback.PlaybackClient
 import kotlinx.coroutines.flow.first
@@ -62,6 +63,7 @@ object SignOutCleanup {
         //    browse request can't reload the file we're about to delete.
         runCatching { LibraryCacheStore(app).clear() }
         runCatching { TagCache.delete(app) }
+        runCatching { PlaybackStateStore.clear(app) }
         runCatching { MusicLibraryHolder.clear() }
         AlbumArtLoader.clearCache()
         LibraryLoadState.update(LibraryLoadState.Status.Idle)

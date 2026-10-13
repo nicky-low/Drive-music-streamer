@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -49,6 +51,16 @@ private const val ACTION_CYCLE_REPEAT = "com.example.drivestreamer.CYCLE_REPEAT"
 private val SHUFFLE_COMMAND = SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY)
 private val REPEAT_COMMAND = SessionCommand(ACTION_CYCLE_REPEAT, Bundle.EMPTY)
 
+// The "Continue listening" row at the top of Android Auto's browse list, and
+// the root Android asks for when it wants to know what was played last (the
+// "recent" contract, used for resuming from the notification shade, after a
+// reboot, etc.).
+private const val RESUME_ID = "resume"
+private const val RECENT_ROOT_ID = "recent"
+
+// How often the playback position is saved while music is playing.
+private const val SAVE_INTERVAL_MS = 10_000L
+
 /**
  * This service is the bridge to Android Auto. Once it's registered
  * (see AndroidManifest's <service> + automotive_app_desc.xml), Android Auto
@@ -62,9 +74,28 @@ class MusicService : MediaLibraryService() {
     private lateinit var tokenProvider: TokenProvider
     private val albumArtLoader = AlbumArtLoader()
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    private lateinit var stateStore: PlaybackStateStore
+
+    // Saves the playback position every so often while playing, so a
+    // sudden stop (car switched off, phone disconnected) loses very little.
+    private val saveHandler = Handler(Looper.getMainLooper())
+    private val periodicSave = object : Runnable {
+        override fun run() {
+            savePlaybackState()
+            if (player.isPlaying) saveHandler.postDelayed(this, SAVE_INTERVAL_MS)
+        }
+    }
+
+    /** The saved track expanded into a queue, ready to hand to the player. */
+    private class SavedQueue(
+        val items: List<MediaItem>,
+        val index: Int,
+        val state: PlaybackStateStore.Saved
+    )
 
     override fun onCreate() {
         super.onCreate()
+        stateStore = PlaybackStateStore(applicationContext)
 
         val authManager = AuthManager(applicationContext)
         tokenProvider = TokenProvider(authManager) {
@@ -107,6 +138,40 @@ class MusicService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 mediaItem?.let { fetchAndAttachArt(it) }
+            }
+        })
+
+        // Remember what's playing, so it can be picked up again later —
+        // e.g. when the car starts and Android Auto asks us to play.
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                savePlaybackState()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                savePlaybackState()
+                saveHandler.removeCallbacks(periodicSave)
+                if (isPlaying) saveHandler.postDelayed(periodicSave, SAVE_INTERVAL_MS)
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) savePlaybackState()
+            }
+
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                savePlaybackState()
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                savePlaybackState()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) savePlaybackState()
             }
         })
 
@@ -176,6 +241,94 @@ class MusicService : MediaLibraryService() {
             MoreExecutors.directExecutor()
         )
         return future
+    }
+
+    // --- Remembering and resuming playback -----------------------------
+
+    private fun savePlaybackState() {
+        // Nothing to remember if nothing's loaded, or if signed out (stopping
+        // playback during sign-out fires events that would otherwise write
+        // the state straight back after it was cleared).
+        val item = player.currentMediaItem ?: return
+        if (GoogleSignIn.getLastSignedInAccount(applicationContext) == null) return
+
+        // A queue that played to its end should resume from the start of the
+        // last track, not from its final second.
+        val position = if (player.playbackState == Player.STATE_ENDED) 0L else player.currentPosition
+        stateStore.save(
+            mediaId = item.mediaId,
+            positionMs = position.coerceAtLeast(0L),
+            shuffle = player.shuffleModeEnabled,
+            repeatMode = player.repeatMode
+        )
+    }
+
+    /**
+     * The last-played track expanded to the whole-library queue it was
+     * playing from, or null if there's nothing saved or the track is no
+     * longer in the library.
+     */
+    private suspend fun loadSavedQueue(): SavedQueue? {
+        val saved = stateStore.load() ?: return null
+        MusicLibraryHolder.ensureLoaded(applicationContext)
+        val queue = withContext(Dispatchers.Default) { queueFor(saved.mediaId) } ?: return null
+        return SavedQueue(queue.first, queue.second, saved)
+    }
+
+    private fun applyShuffleAndRepeat(state: PlaybackStateStore.Saved) {
+        player.shuffleModeEnabled = state.shuffle
+        player.repeatMode = state.repeatMode
+    }
+
+    /** What to play when asked to resume: the saved queue, at the saved position. */
+    private suspend fun resumeRequest(): MediaSession.MediaItemsWithStartPosition {
+        val saved = loadSavedQueue() ?: throw UnsupportedOperationException("Nothing to resume")
+        applyShuffleAndRepeat(saved.state)
+        return MediaSession.MediaItemsWithStartPosition(saved.items, saved.index, saved.state.positionMs)
+    }
+
+    /**
+     * Puts the last track back in the player, paused and ready, if nothing
+     * is loaded. Done when Android Auto connects, so the app opens showing
+     * where you left off instead of an empty player.
+     */
+    private fun restoreLastPlayback() {
+        if (player.mediaItemCount > 0) return
+        serviceScope.launch {
+            val saved = loadSavedQueue() ?: return@launch
+            if (player.mediaItemCount > 0) return@launch // something else got there first
+            applyShuffleAndRepeat(saved.state)
+            player.setMediaItems(saved.items, saved.index, saved.state.positionMs)
+            player.prepare() // ready to play, but not playing
+        }
+    }
+
+    /** The saved track as a browsable item, or null if there isn't one. */
+    private fun savedTrack(): Track? {
+        val saved = stateStore.load() ?: return null
+        for (album in MusicLibraryHolder.albums) {
+            album.tracks.firstOrNull { it.fileId == saved.mediaId }?.let { return it }
+        }
+        return null
+    }
+
+    /** "Continue listening" row for the top of the browse list. */
+    private fun resumeItem(): MediaItem? {
+        // Not while something is actually playing: then it's just noise.
+        if (player.isPlaying) return null
+        val track = savedTrack() ?: return null
+        return MediaItem.Builder()
+            .setMediaId(RESUME_ID)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("Continue listening")
+                    .setSubtitle(track.displayLabel)
+                    .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .build()
+            )
+            .build()
     }
 
     /** The shuffle and repeat buttons, with icons reflecting the current state. */
@@ -317,6 +470,7 @@ class MusicService : MediaLibraryService() {
      * connected, stays bound on its own and keeps the service alive.
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        savePlaybackState()
         if (!isPlaybackOngoing) {
             PlaybackClient.releaseAll()
         }
@@ -324,6 +478,8 @@ class MusicService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        savePlaybackState()
+        saveHandler.removeCallbacksAndMessages(null)
         MusicLibraryHolder.removeListener(libraryChangedListener)
         serviceScope.cancel()
         mediaSession.release()
@@ -372,13 +528,38 @@ class MusicService : MediaLibraryService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
 
+        override fun onPostConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ) {
+            // Android Auto (or another app) has connected. If the service was
+            // just started and nothing is queued, bring back the last track,
+            // paused, so what you see is where you left off. Our own screens
+            // are skipped: the phone app has always opened to an empty player.
+            if (controller.packageName != packageName) restoreLastPlayback()
+        }
+
+        // A "play" arrived while nothing is loaded — typically Android Auto
+        // starting music automatically as the car starts, or a Bluetooth
+        // play button. Without this, Media3 has nothing to play and does
+        // nothing. Hand it the saved queue at the saved position.
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = futureOf {
+            resumeRequest()
+        }
+
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            // Android sometimes asks for a special "recent" root: just the
+            // last thing played, used to offer resuming it (from the
+            // notification shade after a reboot, for instance).
             val rootItem = MediaItem.Builder()
-                .setMediaId("root")
+                .setMediaId(if (params?.isRecent == true) RECENT_ROOT_ID else "root")
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle("Drive Music")
@@ -403,8 +584,12 @@ class MusicService : MediaLibraryService() {
                 MusicLibraryHolder.ensureLoaded(applicationContext)
                 val albums = MusicLibraryHolder.albums
 
-                val items = if (parentId == "root") {
-                    albums.map { album -> albumToMediaItem(album) }
+                val items = if (parentId == RECENT_ROOT_ID) {
+                    listOfNotNull(savedTrack()?.let { trackToMediaItem(it) })
+                } else if (parentId == "root") {
+                    // "Continue listening" first (when there's something to
+                    // continue), then the folders.
+                    listOfNotNull(resumeItem()) + albums.map { album -> albumToMediaItem(album) }
                 } else {
                     val album = albums.find { it.folderId == parentId }
                     album?.tracks?.map { trackToMediaItem(it) } ?: emptyList()
@@ -423,8 +608,9 @@ class MusicService : MediaLibraryService() {
             MusicLibraryHolder.ensureLoaded(applicationContext)
             val albums = MusicLibraryHolder.albums
             val item: MediaItem? = when {
-                mediaId == "root" -> MediaItem.Builder()
-                    .setMediaId("root")
+                mediaId == RESUME_ID -> resumeItem()
+                mediaId == RECENT_ROOT_ID || mediaId == "root" -> MediaItem.Builder()
+                    .setMediaId(mediaId)
                     .setMediaMetadata(
                         MediaMetadata.Builder()
                             .setTitle("Drive Music")
@@ -465,6 +651,10 @@ class MusicService : MediaLibraryService() {
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = futureOf {
             MusicLibraryHolder.ensureLoaded(applicationContext)
             val single = mediaItems.singleOrNull()
+
+            // The "Continue listening" row: the saved queue, at the saved position.
+            if (single?.mediaId == RESUME_ID) return@futureOf resumeRequest()
+
             val queue = if (single != null && single.localConfiguration == null) {
                 // A few thousand items to build: keep it off the main thread.
                 withContext(Dispatchers.Default) { queueFor(single.mediaId) }
