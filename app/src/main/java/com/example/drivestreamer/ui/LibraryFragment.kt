@@ -42,10 +42,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.Normalizer
+import kotlin.random.Random
 
 // ---- Search support (private to this file) ------------------------------
 
 private const val MAX_TRACK_RESULTS = 200
+private const val MAX_ARTIST_RESULTS = 20
 private val ACCENT_MARKS = Regex("\\p{Mn}+")
 
 /** Lower-case and strip accents, so "beyonce" finds "Beyoncé". */
@@ -60,19 +62,47 @@ private class SearchEntry(
     val haystack: String
 )
 
-private class SearchIndex(val entries: List<SearchEntry>, val albumKeys: List<String>)
+/**
+ * An artist and all of their songs in the library. [key] is the normalised
+ * name used for matching ("Beyoncé", "BEYONCE" and "beyonce" are one artist);
+ * [name] is the spelling that appears most often, for display.
+ */
+private class ArtistEntry(val key: String, val name: String, val tracks: List<Track>)
+
+private class SearchIndex(
+    val entries: List<SearchEntry>,
+    val albumKeys: List<String>,
+    val artists: List<ArtistEntry>
+)
 
 private sealed interface ResultRow {
     data class Header(val text: String) : ResultRow
+    data class ArtistRow(val artist: ArtistEntry) : ResultRow
     data class AlbumRow(val albumIndex: Int) : ResultRow
     data class TrackRow(val entry: SearchEntry) : ResultRow
 }
 
+/**
+ * What a search found: the rows to show (capped, so the list stays light),
+ * and *every* matching song, so "shuffle all" plays all of them and not
+ * just the ones on screen.
+ */
+private class SearchOutcome(val rows: List<ResultRow>, val allHits: List<SearchEntry>)
+
 private fun buildIndex(albums: List<Album>): SearchIndex {
     val entries = ArrayList<SearchEntry>()
+    val tracksByArtist = LinkedHashMap<String, MutableList<Track>>()
+    val spellings = HashMap<String, HashMap<String, Int>>()
     var flat = 0
     for (album in albums) {
         for (track in album.tracks) {
+            val artist = track.displayArtist.trim()
+            if (artist.isNotEmpty()) {
+                val key = normalize(artist)
+                tracksByArtist.getOrPut(key) { ArrayList() }.add(track)
+                val counts = spellings.getOrPut(key) { HashMap() }
+                counts[artist] = (counts[artist] ?: 0) + 1
+            }
             entries.add(
                 SearchEntry(
                     track = track,
@@ -84,11 +114,23 @@ private fun buildIndex(albums: List<Album>): SearchIndex {
             flat++
         }
     }
-    return SearchIndex(entries, albums.map { normalize(it.name) })
+    val artists = tracksByArtist.map { (key, tracks) ->
+        val name = spellings[key]?.entries?.maxByOrNull { it.value }?.key ?: key
+        ArtistEntry(key, name, tracks)
+    }
+    return SearchIndex(entries, albums.map { normalize(it.name) }, artists)
 }
 
-/** Every typed word has to appear somewhere in the folder name, or in the song's title/artist/folder. */
-private fun computeResults(index: SearchIndex, terms: List<String>): List<ResultRow> {
+/**
+ * Every typed word has to appear somewhere in an artist's name, a folder
+ * name, or a song's title/artist/folder.
+ */
+private fun computeResults(index: SearchIndex, terms: List<String>): SearchOutcome {
+    val artistHits = index.artists
+        .filter { a -> terms.all { a.key.contains(it) } }
+        // Artists whose name starts with what you typed come first (stable).
+        .sortedBy { if (it.key.startsWith(terms[0])) 0 else 1 }
+        .take(MAX_ARTIST_RESULTS)
     val albumHits = index.albumKeys.indices.filter { i ->
         terms.all { index.albumKeys[i].contains(it) }
     }
@@ -98,6 +140,10 @@ private fun computeResults(index: SearchIndex, terms: List<String>): List<Result
     val shown = ranked.take(MAX_TRACK_RESULTS)
 
     val rows = ArrayList<ResultRow>()
+    if (artistHits.isNotEmpty()) {
+        rows.add(ResultRow.Header("Artists"))
+        artistHits.forEach { rows.add(ResultRow.ArtistRow(it)) }
+    }
     if (albumHits.isNotEmpty()) {
         rows.add(ResultRow.Header("Folders"))
         albumHits.forEach { rows.add(ResultRow.AlbumRow(it)) }
@@ -109,7 +155,7 @@ private fun computeResults(index: SearchIndex, terms: List<String>): List<Result
             rows.add(ResultRow.Header("Showing ${shown.size} of ${ranked.size} songs — keep typing to narrow it down"))
         }
     }
-    return rows
+    return SearchOutcome(rows, ranked)
 }
 
 /**
@@ -163,11 +209,16 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
     private var lastResults: List<ResultRow> = emptyList()
     private var lastResultsQuery = ""
 
+    // Every song matching the current search (not just the ones shown), for
+    // "Shuffle all".
+    private var lastAllHits: List<SearchEntry> = emptyList()
+
     private lateinit var backButton: ImageButton
     private lateinit var searchButton: ImageButton
     private lateinit var searchRow: View
     private lateinit var searchInput: EditText
     private lateinit var searchClear: ImageButton
+    private lateinit var shuffleResultsButton: Button
     private lateinit var titleText: TextView
     private lateinit var listView: ListView
     private lateinit var emptyState: View
@@ -206,6 +257,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         searchRow = view.findViewById(R.id.searchRow)
         searchInput = view.findViewById(R.id.searchInput)
         searchClear = view.findViewById(R.id.searchClear)
+        shuffleResultsButton = view.findViewById(R.id.shuffleResultsButton)
         titleText = view.findViewById(R.id.listTitleText)
         listView = view.findViewById(R.id.trackListView)
         emptyState = view.findViewById(R.id.emptyState)
@@ -217,6 +269,10 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         backButton.setOnClickListener { showTopLevel() }
         searchButton.setOnClickListener { toggleSearch() }
         searchClear.setOnClickListener { searchInput.setText("") }
+        shuffleResultsButton.setOnClickListener {
+            hideKeyboard()
+            playShuffled(lastAllHits.map { it.track })
+        }
         view.findViewById<Button>(R.id.emptySettingsButton).setOnClickListener {
             (activity as? MainActivity)?.showSettings()
         }
@@ -340,6 +396,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         indexDeferred = null
         lastResults = emptyList()
         lastResultsQuery = ""
+        lastAllHits = emptyList()
     }
 
     private fun renderLoading(status: LibraryLoadState.Status) {
@@ -431,13 +488,14 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
             if (terms.isEmpty()) return@launch
 
             val index = ensureIndex().await()
-            val rows = withContext(Dispatchers.Default) { computeResults(index, terms) }
+            val outcome = withContext(Dispatchers.Default) { computeResults(index, terms) }
 
             // Typing may have moved on, or search been closed, while we worked.
             if (!searchOpen || typed != query) return@launch
-            lastResults = rows
+            lastResults = outcome.rows
+            lastAllHits = outcome.allHits
             lastResultsQuery = typed
-            if (openAlbumIndex == null) renderResults(rows)
+            if (openAlbumIndex == null) renderResults(outcome.rows)
         }
     }
 
@@ -471,6 +529,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         resultsAdapter = null
         titleText.text = "Library"
         noResultsText.visibility = View.GONE
+        shuffleResultsButton.visibility = View.GONE
         emptyState.visibility =
             if (albums.isEmpty() && cacheChecked) View.VISIBLE else View.GONE
         applyHeaderState()
@@ -492,11 +551,22 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         noResultsText.text = "No matches for “${query.trim()}”"
         applyHeaderState()
 
+        // One button to shuffle everything that matched, whatever kind of
+        // result it was (an artist, a folder name, a word in a title...).
+        val hitCount = lastAllHits.size
+        shuffleResultsButton.visibility = if (hitCount > 0) View.VISIBLE else View.GONE
+        shuffleResultsButton.text =
+            if (hitCount == 1) "Play this song" else "Shuffle all $hitCount songs"
+
         val adapter = ResultsAdapter(rows)
         resultsAdapter = adapter
         listView.adapter = adapter
         listView.setOnItemClickListener { _, _, position, _ ->
             when (val row = rows.getOrNull(position)) {
+                is ResultRow.ArtistRow -> {
+                    hideKeyboard()
+                    playShuffled(row.artist.tracks)
+                }
                 is ResultRow.AlbumRow -> {
                     hideKeyboard()
                     showTracksForAlbum(row.albumIndex)
@@ -522,6 +592,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         titleText.text = album.name
         emptyState.visibility = View.GONE
         noResultsText.visibility = View.GONE
+        shuffleResultsButton.visibility = View.GONE
         applyHeaderState()
 
         val adapter = TrackAdapter(album.tracks)
@@ -610,11 +681,12 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         override fun getCount() = rows.size
         override fun getItem(position: Int): Any = rows[position]
         override fun getItemId(position: Int) = position.toLong()
-        override fun getViewTypeCount() = 3
+        override fun getViewTypeCount() = 4
         override fun getItemViewType(position: Int) = when (rows[position]) {
             is ResultRow.Header -> 0
-            is ResultRow.AlbumRow -> 1
-            is ResultRow.TrackRow -> 2
+            is ResultRow.ArtistRow -> 1
+            is ResultRow.AlbumRow -> 2
+            is ResultRow.TrackRow -> 3
         }
 
         override fun areAllItemsEnabled() = false
@@ -626,6 +698,15 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
                     val view = convertView
                         ?: layoutInflater.inflate(R.layout.item_section_header, parent, false)
                     (view as TextView).text = row.text
+                    view
+                }
+                is ResultRow.ArtistRow -> {
+                    val view = convertView
+                        ?: layoutInflater.inflate(R.layout.item_artist, parent, false)
+                    val tile = view.findViewById<TextView>(R.id.artistTile)
+                    tile.text = initialFor(row.artist.name)
+                    tile.background = tileBackground(row.artist.name, circle = true)
+                    view.findViewById<TextView>(R.id.artistName).text = row.artist.name
                     view
                 }
                 is ResultRow.AlbumRow -> {
@@ -663,10 +744,12 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "♪"
 
     /** A rounded tile whose colour is derived from the name, so each folder is recognisable. */
-    private fun tileBackground(name: String): GradientDrawable {
+    private fun tileBackground(name: String, circle: Boolean = false): GradientDrawable {
         val hue = (name.hashCode() and 0x7fffffff) % 360
         val color = Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.45f, 0.52f))
-        val radius = 12f * resources.displayMetrics.density
+        // Artists get round tiles, folders rounded squares; a radius bigger
+        // than half the tile's size is what makes it a circle.
+        val radius = (if (circle) 40f else 12f) * resources.displayMetrics.density
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = radius
@@ -676,26 +759,50 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     // --- Playback ------------------------------------------------------
 
+    /** The item the app queues for a track. (Cover art is attached once playback starts.) */
+    private fun mediaItemFor(track: Track): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(track.fileId)
+            .setUri("drive://file/${track.fileId}")
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.displayTitle)
+                    .setArtist(track.displayArtist.ifBlank { null })
+                    .setAlbumTitle(track.albumName)
+                    .build()
+            )
+            .build()
+
+    /** Plays the whole library in folder order, starting at [flatIndex]. */
     private fun playTrackAt(flatIndex: Int) {
         val allTracks = albums.flatMap { it.tracks }
         if (allTracks.isEmpty()) return
 
-        val mediaItems = allTracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.fileId)
-                .setUri("drive://file/${track.fileId}")
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.displayTitle)
-                        .setArtist(track.displayArtist.ifBlank { null })
-                        .setAlbumTitle(track.albumName)
-                        .build()
-                )
-                .build()
-        }
+        val mediaItems = allTracks.map { mediaItemFor(it) }
 
         PlaybackClient.connect(requireContext().applicationContext) { c ->
             c.setMediaItems(mediaItems, flatIndex, 0L)
+            c.prepare()
+            c.play()
+            (activity as? MainActivity)?.showNowPlaying()
+        }
+    }
+
+    /**
+     * Shuffles just [tracks] — the queue is only these songs, not the whole
+     * library — starting from a random one. Shuffle mode is switched on, so
+     * the rest of the set also comes in random order.
+     */
+    private fun playShuffled(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+
+        val mediaItems = tracks.map { mediaItemFor(it) }
+        val start = Random.nextInt(mediaItems.size)
+
+        PlaybackClient.connect(requireContext().applicationContext) { c ->
+            // Shuffle first, so the queue is shuffled from the very start.
+            c.shuffleModeEnabled = true
+            c.setMediaItems(mediaItems, start, 0L)
             c.prepare()
             c.play()
             (activity as? MainActivity)?.showNowPlaying()

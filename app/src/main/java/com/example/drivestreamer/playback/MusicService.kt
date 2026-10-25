@@ -11,6 +11,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -42,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
 
 // Shuffle and repeat buttons shown by Android Auto (and in the phone's media
 // notification). They're "custom commands": Auto sends the action name back
@@ -75,6 +77,11 @@ class MusicService : MediaLibraryService() {
     private val albumArtLoader = AlbumArtLoader()
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private lateinit var stateStore: PlaybackStateStore
+
+    // Writes the queue's track list to disk. One thread, so writes happen in
+    // the order they were asked for and a stale one can never land last.
+    private val queueWriter = Executors.newSingleThreadExecutor()
+    private var lastQueueSignature = 0
 
     // Saves the playback position every so often while playing, so a
     // sudden stop (car switched off, phone disconnected) loses very little.
@@ -173,6 +180,10 @@ class MusicService : MediaLibraryService() {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) savePlaybackState()
             }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) saveQueueScope()
+            }
         })
 
         // Tapping the media notification (or the lock-screen player) opens
@@ -264,15 +275,65 @@ class MusicService : MediaLibraryService() {
     }
 
     /**
-     * The last-played track expanded to the whole-library queue it was
-     * playing from, or null if there's nothing saved or the track is no
-     * longer in the library.
+     * Keeps track of *which tracks* are queued, so that resuming brings back
+     * the same set. Normally that's the whole library and there's nothing to
+     * store; but a queue like "shuffle everything by this artist" is only
+     * part of it, and its track list is written to disk.
+     *
+     * Run whenever the queue changes, whoever changed it (the app, Android
+     * Auto, a resume).
+     */
+    private fun saveQueueScope() {
+        if (GoogleSignIn.getLastSignedInAccount(applicationContext) == null) return
+
+        val timeline = player.currentTimeline
+        val count = timeline.windowCount
+        if (count == 0) return
+
+        val ids = ArrayList<String>(count)
+        val window = Timeline.Window()
+        for (i in 0 until count) {
+            timeline.getWindow(i, window)
+            ids.add(window.mediaItem.mediaId)
+        }
+
+        // Cover art being attached replaces the current item, which also
+        // reports a queue change. Only write when the tracks really differ.
+        val signature = ids.hashCode()
+        if (signature == lastQueueSignature) return
+        lastQueueSignature = signature
+
+        val librarySize = MusicLibraryHolder.albums.sumOf { it.tracks.size }
+        val toStore: List<String>? = if (count == librarySize) null else ids
+        try {
+            queueWriter.execute { stateStore.saveQueue(toStore) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // The service is already shutting down; nothing more to save.
+        }
+    }
+
+    /**
+     * The saved queue at the saved track: the stored set of tracks (if the
+     * queue was only part of the library), otherwise the whole library.
+     * Null if there's nothing saved or the track is no longer in the library.
      */
     private suspend fun loadSavedQueue(): SavedQueue? {
         val saved = stateStore.load() ?: return null
         MusicLibraryHolder.ensureLoaded(applicationContext)
-        val queue = withContext(Dispatchers.Default) { queueFor(saved.mediaId) } ?: return null
+        val storedIds = withContext(Dispatchers.IO) { stateStore.loadQueue() }
+        val queue = withContext(Dispatchers.Default) {
+            storedSetQueue(saved.mediaId, storedIds) ?: queueFor(saved.mediaId)
+        } ?: return null
         return SavedQueue(queue.first, queue.second, saved)
+    }
+
+    /** A stored part-of-the-library queue, positioned at [mediaId]; null if it no longer applies. */
+    private fun storedSetQueue(mediaId: String, ids: List<String>?): Pair<List<MediaItem>, Int>? {
+        if (ids == null) return null
+        val tracks = QueueScope.tracksForIds(MusicLibraryHolder.albums, ids)
+        val index = tracks.indexOfFirst { it.fileId == mediaId }
+        if (index < 0) return null // the track isn't in that set any more: fall back to the library
+        return tracks.map { trackToMediaItem(it) } to index
     }
 
     private fun applyShuffleAndRepeat(state: PlaybackStateStore.Saved) {
@@ -486,6 +547,7 @@ class MusicService : MediaLibraryService() {
     override fun onDestroy() {
         savePlaybackState()
         saveHandler.removeCallbacksAndMessages(null)
+        queueWriter.shutdown() // lets any write already queued finish
         MusicLibraryHolder.removeListener(libraryChangedListener)
         serviceScope.cancel()
         mediaSession.release()
