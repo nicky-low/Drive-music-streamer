@@ -1,0 +1,10 @@
+<!--  An artist in search results. Tapping it shuffles all of their songs.  -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:paddingStart="20dp" android:paddingEnd="16dp" android:paddingTop="10dp" android:paddingBottom="10dp">
+<!--  A round tile with the artist's first letter (colour comes from the name).  -->
+<TextView android:id="@+id/artistTile" android:layout_width="52dp" android:layout_height="52dp" android:gravity="center" android:textColor="#FFFFFF" android:textSize="22sp" android:textStyle="bold"/>
+<LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="16dp" android:orientation="vertical">
+<TextView android:id="@+id/artistName" android:layout_width="match_parent" android:layout_height="wrap_content" android:singleLine="true" android:ellipsize="end" android:textColor="@color/text_primary" android:textSize="16sp"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Shuffle all their songs" android:textColor="@color/text_secondary" android:textSize="13sp"/>
+</LinearLayout>
+<ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="Shuffle" android:src="@drawable/ic_np_shuffle" app:tint="@color/accent"/>
+</LinearLayout>
