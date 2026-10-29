@@ -24,7 +24,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import com.example.drivestreamer.R
@@ -33,6 +32,7 @@ import com.example.drivestreamer.drive.Track
 import com.example.drivestreamer.playback.LibraryLoadState
 import com.example.drivestreamer.playback.MusicLibraryHolder
 import com.example.drivestreamer.playback.PlaybackClient
+import com.example.drivestreamer.playback.TrackMediaMetadata
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -218,6 +218,8 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
     private lateinit var searchRow: View
     private lateinit var searchInput: EditText
     private lateinit var searchClear: ImageButton
+    private lateinit var resultsActions: View
+    private lateinit var playResultsButton: Button
     private lateinit var shuffleResultsButton: Button
     private lateinit var titleText: TextView
     private lateinit var listView: ListView
@@ -257,6 +259,8 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         searchRow = view.findViewById(R.id.searchRow)
         searchInput = view.findViewById(R.id.searchInput)
         searchClear = view.findViewById(R.id.searchClear)
+        resultsActions = view.findViewById(R.id.resultsActions)
+        playResultsButton = view.findViewById(R.id.playResultsButton)
         shuffleResultsButton = view.findViewById(R.id.shuffleResultsButton)
         titleText = view.findViewById(R.id.listTitleText)
         listView = view.findViewById(R.id.trackListView)
@@ -272,6 +276,12 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         shuffleResultsButton.setOnClickListener {
             hideKeyboard()
             playShuffled(lastAllHits.map { it.track })
+        }
+        playResultsButton.setOnClickListener {
+            hideKeyboard()
+            // Results are ranked by relevance; "in order" means the library's
+            // own order — folder by folder, track by track.
+            playInOrder(lastAllHits.sortedBy { it.flatIndex }.map { it.track })
         }
         view.findViewById<Button>(R.id.emptySettingsButton).setOnClickListener {
             (activity as? MainActivity)?.showSettings()
@@ -529,7 +539,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         resultsAdapter = null
         titleText.text = "Library"
         noResultsText.visibility = View.GONE
-        shuffleResultsButton.visibility = View.GONE
+        resultsActions.visibility = View.GONE
         emptyState.visibility =
             if (albums.isEmpty() && cacheChecked) View.VISIBLE else View.GONE
         applyHeaderState()
@@ -551,12 +561,19 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         noResultsText.text = "No matches for “${query.trim()}”"
         applyHeaderState()
 
-        // One button to shuffle everything that matched, whatever kind of
-        // result it was (an artist, a folder name, a word in a title...).
+        // Buttons to play or shuffle everything that matched, whatever kind
+        // of result it was (an artist, a folder name, a word in a title...).
         val hitCount = lastAllHits.size
-        shuffleResultsButton.visibility = if (hitCount > 0) View.VISIBLE else View.GONE
-        shuffleResultsButton.text =
-            if (hitCount == 1) "Play this song" else "Shuffle all $hitCount songs"
+        resultsActions.visibility = if (hitCount > 0) View.VISIBLE else View.GONE
+        if (hitCount == 1) {
+            // Shuffling one song is just playing it.
+            playResultsButton.text = "Play this song"
+            shuffleResultsButton.visibility = View.GONE
+        } else {
+            playResultsButton.text = "Play in order"
+            shuffleResultsButton.text = "Shuffle all $hitCount"
+            shuffleResultsButton.visibility = View.VISIBLE
+        }
 
         val adapter = ResultsAdapter(rows)
         resultsAdapter = adapter
@@ -592,7 +609,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         titleText.text = album.name
         emptyState.visibility = View.GONE
         noResultsText.visibility = View.GONE
-        shuffleResultsButton.visibility = View.GONE
+        resultsActions.visibility = View.GONE
         applyHeaderState()
 
         val adapter = TrackAdapter(album.tracks)
@@ -707,6 +724,14 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
                     tile.text = initialFor(row.artist.name)
                     tile.background = tileBackground(row.artist.name, circle = true)
                     view.findViewById<TextView>(R.id.artistName).text = row.artist.name
+                    view.findViewById<ImageButton>(R.id.artistPlayButton).setOnClickListener {
+                        hideKeyboard()
+                        playInOrder(row.artist.tracks)
+                    }
+                    view.findViewById<ImageButton>(R.id.artistShuffleButton).setOnClickListener {
+                        hideKeyboard()
+                        playShuffled(row.artist.tracks)
+                    }
                     view
                 }
                 is ResultRow.AlbumRow -> {
@@ -764,13 +789,7 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         MediaItem.Builder()
             .setMediaId(track.fileId)
             .setUri("drive://file/${track.fileId}")
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(track.displayTitle)
-                    .setArtist(track.displayArtist.ifBlank { null })
-                    .setAlbumTitle(track.albumName)
-                    .build()
-            )
+            .setMediaMetadata(TrackMediaMetadata.builderFor(track).build())
             .build()
 
     /** Plays the whole library in folder order, starting at [flatIndex]. */
@@ -788,20 +807,27 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         }
     }
 
+    /** Shuffles just [tracks], starting from a random one. */
+    private fun playShuffled(tracks: List<Track>) = playSet(tracks, shuffle = true)
+
+    /** Plays just [tracks] from the first one, in the order given, with shuffle off. */
+    private fun playInOrder(tracks: List<Track>) = playSet(tracks, shuffle = false)
+
     /**
-     * Shuffles just [tracks] — the queue is only these songs, not the whole
-     * library — starting from a random one. Shuffle mode is switched on, so
-     * the rest of the set also comes in random order.
+     * Plays only [tracks] — the queue is just these songs, not the whole
+     * library. Shuffle mode is set explicitly either way, so playing a set in
+     * order always really is in order, even if shuffle was left on from last
+     * time, and a shuffled set is shuffled from the very first song.
      */
-    private fun playShuffled(tracks: List<Track>) {
+    private fun playSet(tracks: List<Track>, shuffle: Boolean) {
         if (tracks.isEmpty()) return
 
         val mediaItems = tracks.map { mediaItemFor(it) }
-        val start = Random.nextInt(mediaItems.size)
+        val start = if (shuffle) Random.nextInt(mediaItems.size) else 0
 
         PlaybackClient.connect(requireContext().applicationContext) { c ->
-            // Shuffle first, so the queue is shuffled from the very start.
-            c.shuffleModeEnabled = true
+            // Shuffle first, so the queue is in the right mode from the start.
+            c.shuffleModeEnabled = shuffle
             c.setMediaItems(mediaItems, start, 0L)
             c.prepare()
             c.play()
