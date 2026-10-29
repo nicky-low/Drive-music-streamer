@@ -32,6 +32,20 @@ data class Track(
 ) {
     val displayLabel: String
         get() = if (displayArtist.isNotBlank()) "$displayArtist — $displayTitle" else displayTitle
+
+    /**
+     * Artist and album as one line, "Artist • Album" — for screens like
+     * Android Auto's now-playing view, which show an artist line but never
+     * the album. Where the folder is already named "Artist - Album", the
+     * folder name is used on its own rather than repeating the artist.
+     */
+    val artistWithAlbum: String
+        get() = when {
+            albumName.isBlank() -> displayArtist
+            displayArtist.isBlank() -> albumName
+            albumName.startsWith(displayArtist, ignoreCase = true) -> albumName
+            else -> "$displayArtist • $albumName"
+        }
 }
 
 class DriveLibraryRepository {
