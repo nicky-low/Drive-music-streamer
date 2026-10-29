@@ -13,6 +13,7 @@ import androidx.media3.common.Player
 import com.example.drivestreamer.R
 import com.example.drivestreamer.auth.AuthManager
 import com.example.drivestreamer.playback.PlaybackClient
+import com.example.drivestreamer.playback.TrackMediaMetadata
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
 /**
@@ -212,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         miniPlayer.visibility = View.VISIBLE
         val metadata = player.mediaMetadata
         miniTitle.text = metadata.title ?: "Unknown title"
-        val artist = metadata.artist?.toString().orEmpty()
+        val artist = TrackMediaMetadata.artistOf(metadata)
         miniArtist.text = artist
         miniArtist.visibility = if (artist.isBlank()) View.GONE else View.VISIBLE
         val showPause = player.isPlaying ||
