@@ -4,7 +4,10 @@
 <TextView android:id="@+id/artistTile" android:layout_width="52dp" android:layout_height="52dp" android:gravity="center" android:textColor="#FFFFFF" android:textSize="22sp" android:textStyle="bold"/>
 <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="16dp" android:orientation="vertical">
 <TextView android:id="@+id/artistName" android:layout_width="match_parent" android:layout_height="wrap_content" android:singleLine="true" android:ellipsize="end" android:textColor="@color/text_primary" android:textSize="16sp"/>
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Shuffle all their songs" android:textColor="@color/text_secondary" android:textSize="13sp"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Play or shuffle all their songs" android:textColor="@color/text_secondary" android:textSize="13sp"/>
 </LinearLayout>
-<ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="Shuffle" android:src="@drawable/ic_np_shuffle" app:tint="@color/accent"/>
+<!--  Real buttons inside a list row: not focusable, so the row itself
+         can still be tapped (that shuffles, same as the shuffle button).  -->
+<ImageButton android:id="@+id/artistPlayButton" android:layout_width="44dp" android:layout_height="44dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Play all in order" android:focusable="false" android:focusableInTouchMode="false" android:padding="10dp" android:scaleType="centerInside" android:src="@drawable/ic_np_play" app:tint="@color/accent"/>
+<ImageButton android:id="@+id/artistShuffleButton" android:layout_width="44dp" android:layout_height="44dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Shuffle all" android:focusable="false" android:focusableInTouchMode="false" android:padding="10dp" android:scaleType="centerInside" android:src="@drawable/ic_np_shuffle" app:tint="@color/accent"/>
 </LinearLayout>
