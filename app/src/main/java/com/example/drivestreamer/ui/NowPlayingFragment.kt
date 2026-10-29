@@ -21,6 +21,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import com.example.drivestreamer.R
 import com.example.drivestreamer.playback.PlaybackClient
+import com.example.drivestreamer.playback.TrackMediaMetadata
 
 /**
  * The Now Playing tab: current track with live progress, transport
@@ -232,7 +233,7 @@ class NowPlayingFragment : Fragment(R.layout.fragment_now_playing) {
 
     private fun applyMetadata(mediaMetadata: MediaMetadata, fallbackTitle: String) {
         trackTitle.text = mediaMetadata.title ?: fallbackTitle
-        val artist = mediaMetadata.artist?.toString().orEmpty()
+        val artist = TrackMediaMetadata.artistOf(mediaMetadata)
         trackArtist.text = artist
         trackArtist.visibility = if (artist.isBlank()) View.GONE else View.VISIBLE
         albumTitle.text = mediaMetadata.albumTitle ?: ""
