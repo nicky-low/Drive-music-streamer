@@ -431,10 +431,7 @@ class MusicService : MediaLibraryService() {
             .setMediaId(track.fileId)
             .setUri("drive://file/${track.fileId}")
             .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(track.displayTitle)
-                    .setArtist(track.displayArtist.ifBlank { null })
-                    .setAlbumTitle(track.albumName)
+                TrackMediaMetadata.builderFor(track)
                     .setArtworkUri(AlbumArtContentProvider.uriFor(track.fileId))
                     .setIsBrowsable(false)
                     .setIsPlayable(true)
