@@ -78,6 +78,11 @@ class MusicService : MediaLibraryService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private lateinit var stateStore: PlaybackStateStore
 
+    // The last Android Auto search, so the second request for the same
+    // results (onGetSearchResult, after onSearch) doesn't search again.
+    @Volatile private var lastSearchQuery: String? = null
+    @Volatile private var lastSearchResult: LibrarySearch.Result? = null
+
     // Writes the queue's track list to disk. One thread, so writes happen in
     // the order they were asked for and a stale one can never land last.
     private val queueWriter = Executors.newSingleThreadExecutor()
@@ -565,7 +570,22 @@ class MusicService : MediaLibraryService() {
                 .add(SHUFFLE_COMMAND)
                 .add(REPEAT_COMMAND)
                 .build()
+            // The queue is the whole library (thousands of songs). Media3 sends
+            // the entire queue to Android Auto, and building a list that big
+            // when you tap the queue button made Auto hang and reset. The
+            // commands of Media3's own notification controller decide what the
+            // system-level session offers, so leaving out "get queue" there
+            // means Auto is told there is no queue, rather than being sent
+            // thousands of entries. Our own screens are unaffected.
+            val playerCommands = if (session.isMediaNotificationController(controller)) {
+                MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                    .remove(Player.COMMAND_GET_TIMELINE)
+                    .build()
+            } else {
+                MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
+            }
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailablePlayerCommands(playerCommands)
                 .setAvailableSessionCommands(commands)
                 .setCustomLayout(buildCustomLayout())
                 .build()
@@ -613,6 +633,48 @@ class MusicService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = futureOf {
             resumeRequest()
+        }
+
+        // Android Auto's search box. Media3 tells Auto that search is
+        // supported, so Auto sends the request and waits to be told results
+        // are ready. With these missing, it waited forever: the endless
+        // spinner. onSearch says "results are ready"; Auto then asks for them
+        // through onGetSearchResult.
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<Void>> = futureOf {
+            MusicLibraryHolder.ensureLoaded(applicationContext)
+            val result = withContext(Dispatchers.Default) {
+                LibrarySearch.search(MusicLibraryHolder.albums, query)
+            }
+            lastSearchQuery = query
+            lastSearchResult = result
+            session.notifySearchResultChanged(browser, query, result.size, params)
+            LibraryResult.ofVoid()
+        }
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = futureOf {
+            MusicLibraryHolder.ensureLoaded(applicationContext)
+            val cached = lastSearchResult
+            val result = if (cached != null && query == lastSearchQuery) {
+                cached
+            } else {
+                withContext(Dispatchers.Default) { LibrarySearch.search(MusicLibraryHolder.albums, query) }
+            }
+            val all = result.albums.map { albumToMediaItem(it) } + result.tracks.map { trackToMediaItem(it) }
+            val from = (page * pageSize).coerceAtMost(all.size)
+            val to = (from + pageSize).coerceAtMost(all.size)
+            LibraryResult.ofItemList(ImmutableList.copyOf(all.subList(from, to)), params)
         }
 
         override fun onGetLibraryRoot(
