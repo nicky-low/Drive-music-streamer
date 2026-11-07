@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 import java.util.concurrent.Executors
 
 // Shuffle and repeat buttons shown by Android Auto (and in the phone's media
@@ -59,6 +60,10 @@ private val REPEAT_COMMAND = SessionCommand(ACTION_CYCLE_REPEAT, Bundle.EMPTY)
 // reboot, etc.).
 private const val RESUME_ID = "resume"
 private const val RECENT_ROOT_ID = "recent"
+
+// "Play all" / "Shuffle all" entries for an artist in Android Auto's search
+// results. The id is "artist:play:<key>" or "artist:shuffle:<key>".
+private const val ARTIST_ACTION_PREFIX = "artist:"
 
 // How often the playback position is saved while music is playing.
 private const val SAVE_INTERVAL_MS = 10_000L
@@ -82,6 +87,10 @@ class MusicService : MediaLibraryService() {
     // results (onGetSearchResult, after onSearch) doesn't search again.
     @Volatile private var lastSearchQuery: String? = null
     @Volatile private var lastSearchResult: LibrarySearch.Result? = null
+
+    // The artist action entries shown in the latest results, so Auto can look
+    // one up by id (onGetItem).
+    @Volatile private var artistActions: Map<String, MediaItem> = emptyMap()
 
     // Writes the queue's track list to disk. One thread, so writes happen in
     // the order they were asked for and a stale one can never land last.
@@ -378,6 +387,43 @@ class MusicService : MediaLibraryService() {
         return null
     }
 
+    /** The two entries shown for an artist in search results: play everything, or shuffle it. */
+    private fun artistActionItems(artist: LibrarySearch.ArtistMatch): List<MediaItem> =
+        listOf("play" to "Play all", "shuffle" to "Shuffle all").map { (mode, label) ->
+            MediaItem.Builder()
+                .setMediaId("$ARTIST_ACTION_PREFIX$mode:${artist.key}")
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle("$label: ${artist.name}")
+                        .setSubtitle("${artist.trackCount} songs")
+                        .setIsBrowsable(false)
+                        .setIsPlayable(true)
+                        .build()
+                )
+                .build()
+        }
+
+    /** What to play when an artist's "Play all" or "Shuffle all" is chosen. */
+    private suspend fun artistRequest(mediaId: String): MediaSession.MediaItemsWithStartPosition {
+        val rest = mediaId.removePrefix(ARTIST_ACTION_PREFIX)
+        val shuffle = rest.substringBefore(':') == "shuffle"
+        val key = rest.substringAfter(':')
+
+        MusicLibraryHolder.ensureLoaded(applicationContext)
+        val tracks = withContext(Dispatchers.Default) {
+            LibrarySearch.tracksForArtist(MusicLibraryHolder.albums, key)
+        }
+        if (tracks.isEmpty()) throw UnsupportedOperationException("No songs for that artist")
+
+        // Set explicitly, so "Play all" really is in order even if shuffle was
+        // left on, and "Shuffle all" is shuffled from the first song.
+        player.shuffleModeEnabled = shuffle
+        val start = if (shuffle) Random.nextInt(tracks.size) else 0
+        return MediaSession.MediaItemsWithStartPosition(
+            tracks.map { trackToMediaItem(it) }, start, C.TIME_UNSET
+        )
+    }
+
     /**
      * "Continue listening" row for the top of the browse list.
      *
@@ -671,7 +717,12 @@ class MusicService : MediaLibraryService() {
             } else {
                 withContext(Dispatchers.Default) { LibrarySearch.search(MusicLibraryHolder.albums, query) }
             }
-            val all = result.albums.map { albumToMediaItem(it) } + result.tracks.map { trackToMediaItem(it) }
+            // Artists first, each with "Play all" and "Shuffle all", then folders, then songs.
+            val actions = result.artists.flatMap { artistActionItems(it) }
+            artistActions = actions.associateBy { it.mediaId }
+            val all = actions +
+                result.albums.map { albumToMediaItem(it) } +
+                result.tracks.map { trackToMediaItem(it) }
             val from = (page * pageSize).coerceAtMost(all.size)
             val to = (from + pageSize).coerceAtMost(all.size)
             LibraryResult.ofItemList(ImmutableList.copyOf(all.subList(from, to)), params)
@@ -748,6 +799,7 @@ class MusicService : MediaLibraryService() {
             MusicLibraryHolder.ensureLoaded(applicationContext)
             val albums = MusicLibraryHolder.albums
             val item: MediaItem? = when {
+                mediaId.startsWith(ARTIST_ACTION_PREFIX) -> artistActions[mediaId]
                 mediaId == RESUME_ID -> resumeItem()
                 mediaId == RECENT_ROOT_ID || mediaId == "root" -> MediaItem.Builder()
                     .setMediaId(mediaId)
@@ -794,6 +846,11 @@ class MusicService : MediaLibraryService() {
 
             // The "Continue listening" row: the saved queue, at the saved position.
             if (single?.mediaId == RESUME_ID) return@futureOf resumeRequest()
+
+            // An artist's "Play all" / "Shuffle all" from Android Auto's search results.
+            if (single != null && single.mediaId.startsWith(ARTIST_ACTION_PREFIX)) {
+                return@futureOf artistRequest(single.mediaId)
+            }
 
             val queue = if (single != null && single.localConfiguration == null) {
                 // A few thousand items to build: keep it off the main thread.
