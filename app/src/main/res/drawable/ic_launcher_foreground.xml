@@ -1,10 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Five rounded bars like a sound wave; the tall centre bar doubles as an "I"
+     for Inshyra. Kept inside the 66dp centre circle that every launcher
+     shape (circle, squircle, ...) is guaranteed to show. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Simple music note, centred in the 72dp adaptive-icon safe zone -->
+
+    <!-- outer, short bars -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M64,30 L64,62 C64,66.4 60.4,70 56,70 C51.6,70 48,66.4 48,62 C48,57.6 51.6,54 56,54 C57.5,54 58.9,54.4 60,55.1 L60,38 L44,42 L44,68 C44,72.4 40.4,76 36,76 C31.6,76 28,72.4 28,68 C28,63.6 31.6,60 36,60 C37.5,60 38.9,60.4 40,61.1 L40,38 L64,30 Z" />
+        android:pathData="M30,46 L30,62 M78,46 L78,62"
+        android:strokeColor="#FF8F9BFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round" />
+    <!-- inner, medium bars -->
+    <path
+        android:pathData="M42,38 L42,70 M66,38 L66,70"
+        android:strokeColor="#FF8F9BFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round" />
+    <!-- the tall centre bar, brightest -->
+    <path
+        android:pathData="M54,28 L54,80"
+        android:strokeColor="#FFE9ECFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round" />
 </vector>
