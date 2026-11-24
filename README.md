@@ -1,4 +1,6 @@
-# Drive Streamer
+# Inshyra
+
+*(Formerly "Drive Streamer".)*
 
 An Android app that streams music from a Google Drive folder, with full
 Android Auto support. No subscription, no third-party app with access to
@@ -15,13 +17,22 @@ min SDK 26, target SDK 34.
   *Settings*. A mini-player strip stays above the tab bar on Library and
   Settings whenever something is queued.
 - **Library browsing and search.** Folders and songs, with the playing
-  track highlighted. The search icon looks across every folder name and
-  every song at once (accent- and case-insensitive: "beyonce" finds
+  track highlighted. The search icon looks across every artist, folder name
+  and song at once (accent- and case-insensitive: "beyonce" finds
   *Beyoncé*), and Back from a folder returns to the same results.
+- **Play or shuffle an artist.** Searching an artist shows a row for them
+  with a play button (all their songs, folder by folder, in order) and a
+  shuffle button. Any search also has **Play in order** and **Shuffle all**
+  buttons that act on every match.
 - **Now Playing.** Large artwork, a live seek bar, shuffle and repeat, and a
   background gradient built from the current album art.
-- **Android Auto.** Browse folders and songs from the car's screen, play
-  them, and use the shuffle and repeat buttons.
+- **Android Auto.** Browse folders and songs from the car's screen, search,
+  play or shuffle an artist, and use the shuffle and repeat buttons. The
+  album name is shown alongside the artist.
+- **Picks up where you left off.** The last track, position, and shuffle and
+  repeat settings are remembered. When the car starts and Android Auto asks
+  for music, the app resumes where it stopped, and reopening it in the car
+  shows that track ready to play.
 - **Survives the app being closed.** Music keeps playing after you swipe the
   app from recents; the library scan keeps going in the background too.
 - **Fast restarts.** The parsed library is cached on the device, so opening
@@ -73,14 +84,26 @@ song — the same in the app and in Android Auto. Playback carries on into the
 next folder when a folder ends, Next and Previous cross folder boundaries, and
 Shuffle covers everything.
 
+Playing or shuffling an artist (or the results of a search) queues just those
+songs instead. That set is remembered too, so resuming brings back the same
+songs rather than the whole library.
+
 ## Android Auto
 
 - Browsing and playback use the standard Media3 `MediaLibraryService`, the
   same API Google's own reference music app uses.
 - Shuffle and repeat appear as buttons on the Now Playing screen and stay in
   sync with the phone, whichever side you change them on.
+- Android Auto's search box works: it returns matching folders and songs, and
+  when the search matches an artist it offers **Play all** and **Shuffle all**
+  for them at the top of the results.
+- A **Continue listening** row sits at the top of the browse list whenever
+  there's something to resume.
 - If Android Auto starts the app by itself (after a reboot, say), the library
   is loaded from the on-disk cache, so browsing works without opening the app.
+- Auto's own queue screen isn't offered. The queue is your whole library
+  (thousands of songs), and sending that to Auto made it hang when the queue
+  button was tapped, so the app tells Auto there is no queue.
 - When a new scan finishes, connected browsers are told to refresh.
 - Cover art in the browse list loads lazily, only for rows being drawn.
 
@@ -179,6 +202,10 @@ app/src/main/java/com/example/drivestreamer/
 │   ├── GoogleDriveDataSource.kt    ExoPlayer data source (Range requests, 401 retry)
 │   ├── PlaybackCache.kt        1.5 GB LRU audio cache on disk
 │   ├── PlaybackClient.kt       One shared MediaController for the whole UI
+│   ├── PlaybackStateStore.kt   Remembers the last track, position, shuffle and repeat
+│   ├── QueueScope.kt           Rebuilds a part-of-the-library queue (e.g. one artist)
+│   ├── LibrarySearch.kt        Search used by Android Auto's search box
+│   ├── TrackMediaMetadata.kt   How a track is described to Auto, the notification, etc.
 │   ├── LibraryLoadService.kt   Foreground service for the library scan
 │   ├── LibraryLoadState.kt     Scan progress, shared with the UI
 │   └── AlbumArtContentProvider.kt  Lazy cover art for Android Auto's browse list
@@ -249,14 +276,19 @@ Auth.
   connection except for what's already in the audio cache.
 - **No playlists or favourites yet.**
 - **Search is exact-substring matching.** Every typed word has to appear
-  somewhere in a folder name, or in a song's title, artist or folder. There's
-  no fuzzy matching for typos, and song results are capped at 200 (the screen
-  says so and asks you to narrow the search).
+  somewhere in an artist, a folder name, or a song's title, artist or folder.
+  There's no fuzzy matching for typos, and song results are capped at 200 (the
+  screen says so and asks you to narrow the search; "Shuffle all" and "Play in
+  order" still use every match).
+- **Artists are matched by their whole tag.** "Fleetwood Mac" and "Fleetwood
+  Mac & Friends" are different artists, and songs with no artist tag don't
+  belong to any artist.
+- **No queue screen in Android Auto.** See the Android Auto section for why.
 - **Whole library in memory.** Fine for several thousand songs; a library in
   the hundreds of thousands would need a different approach.
 - **Phone battery settings.** Some phones (Samsung, Xiaomi, Oppo and others)
   stop background apps aggressively. If playback or a library scan dies when
-  the app is closed, set Drive Streamer's battery usage to *Unrestricted* in
+  the app is closed, set Inshyra's battery usage to *Unrestricted* in
   the phone's settings.
 - **The art provider is exported.** `AlbumArtContentProvider` has to be
   `exported` so Android Auto can load cover art. Any app on the device can
@@ -266,6 +298,10 @@ Auth.
   able to read it.
 - **Debug builds only.** CI builds a debug APK signed with the committed debug
   key. A release build would need its own keystore.
+- **Internal names still say "drivestreamer".** The app's package name
+  (`com.example.drivestreamer`) and the CI artifact name predate the rename.
+  They're left as they are on purpose: Google sign-in is registered against
+  the package name, so changing it would mean re-registering.
 
 ## Why this approach
 
