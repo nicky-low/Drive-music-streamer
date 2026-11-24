@@ -753,7 +753,7 @@ class MusicService : MediaLibraryService() {
                 .setMediaId(if (params?.isRecent == true) RECENT_ROOT_ID else "root")
                 .setMediaMetadata(
                     MediaMetadata.Builder()
-                        .setTitle("Drive Music")
+                        .setTitle("Inshyra")
                         .setIsBrowsable(true)
                         .setIsPlayable(false)
                         .build()
@@ -805,7 +805,7 @@ class MusicService : MediaLibraryService() {
                     .setMediaId(mediaId)
                     .setMediaMetadata(
                         MediaMetadata.Builder()
-                            .setTitle("Drive Music")
+                            .setTitle("Inshyra")
                             .setIsBrowsable(true)
                             .setIsPlayable(false)
                             .build()
