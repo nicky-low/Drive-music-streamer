@@ -9,6 +9,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Needed so the last step can publish the APK as a release.
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -25,7 +29,7 @@ jobs:
           # Default is "tools platform-tools". Google removed the legacy
           # "tools" package from its SDK repo on 2026-09-14, which makes
           # sdkmanager exit 1 and fails this step before the build runs.
-          # We don't need it — Gradle fetches platforms/build-tools itself.
+          # We don't need it - Gradle fetches platforms/build-tools itself.
           packages: 'platform-tools'
 
       - name: Set up Gradle
@@ -41,3 +45,18 @@ jobs:
         with:
           name: drivestreamer-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      # A release has a plain download link that works from a phone browser
+      # or the GitHub app, with no sign-in needed (unlike workflow artifacts).
+      # The same release is replaced on every build, so its link never changes.
+      - name: Publish APK to a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk inshyra-debug.apk
+          gh release delete latest-debug --yes --cleanup-tag || true
+          gh release create latest-debug inshyra-debug.apk \
+            --title "Latest debug build" \
+            --notes "Debug APK built from commit ${{ github.sha }}." \
+            --prerelease \
+            --target ${{ github.sha }}
